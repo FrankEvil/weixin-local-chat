@@ -1,0 +1,26 @@
+# system
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# dependencies
+node_modules/
+
+# build output
+dist/
+public/.vite/
+
+# local runtime data
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+data/*.db
+data/inbox/
+data/outbox/
+data/logs/
+data/openclaw-media/
+
+# local memory / tmp
+.cunzhi-memory/
