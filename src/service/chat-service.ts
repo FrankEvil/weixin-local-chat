@@ -215,6 +215,44 @@ export class ChatService {
     return this.store.getConfig();
   }
 
+  async sendNotification(params: {
+    accountId?: string;
+    title?: string;
+    content?: string;
+    text?: string;
+  }): Promise<MessageRecord> {
+    const target = this.resolveNotificationTarget(params.accountId?.trim() ?? "");
+    const normalizedText = this.buildNotificationText(params);
+    if (!normalizedText) {
+      throw new Error("通知内容不能为空");
+    }
+    this.logRuntime("notify_started", {
+      accountId: target.accountId,
+      peerId: target.peerId,
+      textPreview: normalizedText.slice(0, 120),
+    });
+    try {
+      const message = await this.sendText({
+        accountId: target.accountId,
+        peerId: target.peerId,
+        text: normalizedText,
+      });
+      this.logRuntime("notify_succeeded", {
+        accountId: target.accountId,
+        peerId: target.peerId,
+        messageId: message.id,
+      });
+      return message;
+    } catch (error) {
+      this.logRuntime("notify_failed", {
+        accountId: target.accountId,
+        peerId: target.peerId,
+        error,
+      });
+      throw error;
+    }
+  }
+
   listAccounts(): AccountRecord[] {
     return this.store.listAccounts();
   }
@@ -1282,5 +1320,35 @@ export class ChatService {
 
   private logRuntime(event: string, payload: Record<string, unknown>): void {
     appendJsonlLog("chat-service.jsonl", event, payload);
+  }
+
+  private resolveNotificationTarget(accountId: string): { accountId: string; peerId: string } {
+    const config = this.store.getConfig();
+    const resolvedAccountId = accountId || config.defaultNotifyAccountId.trim();
+    if (!resolvedAccountId) {
+      throw new Error("未配置默认通知目标，请先在设置里选择");
+    }
+    const account = this.mustAccount(resolvedAccountId);
+    const configuredPeerId = resolvedAccountId === config.defaultNotifyAccountId.trim()
+      ? config.defaultNotifyPeerId.trim()
+      : "";
+    const conversations = this.store.listConversations(account.accountId);
+    const peerId = configuredPeerId
+      || (conversations.length === 1 ? conversations[0]?.peerId ?? "" : "")
+      || account.latestPeerId
+      || "";
+    if (!peerId) {
+      throw new Error("目标账号缺少可用会话，暂时无法发送通知");
+    }
+    return {
+      accountId: account.accountId,
+      peerId,
+    };
+  }
+
+  private buildNotificationText(params: { title?: string; content?: string; text?: string }): string {
+    const title = params.title?.trim() ?? "";
+    const content = params.content?.trim() ?? params.text?.trim() ?? "";
+    return [title ? `【${title}】` : "", content].filter(Boolean).join("\n");
   }
 }

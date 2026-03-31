@@ -142,6 +142,9 @@ ON agent_jobs(account_id, peer_id, created_at DESC);
         baseUrl: "https://ilinkai.weixin.qq.com",
         cdnBaseUrl: "https://novac2c.cdn.weixin.qq.com/c2c",
         botType: "3",
+        notifyToken: "",
+        defaultNotifyAccountId: "",
+        defaultNotifyPeerId: "",
         defaultWorkspace: process.cwd(),
         codexWorkspace: "",
         claudeWorkspace: "",
@@ -187,6 +190,9 @@ ON agent_jobs(account_id, peer_id, created_at DESC);
       baseUrl: map.get("baseUrl") ?? "",
       cdnBaseUrl: map.get("cdnBaseUrl") ?? "",
       botType: map.get("botType") ?? "3",
+      notifyToken: map.get("notifyToken") ?? "",
+      defaultNotifyAccountId: map.get("defaultNotifyAccountId") ?? "",
+      defaultNotifyPeerId: map.get("defaultNotifyPeerId") ?? "",
       defaultWorkspace: map.get("defaultWorkspace") ?? process.cwd(),
       codexWorkspace: map.get("codexWorkspace") ?? "",
       claudeWorkspace: map.get("claudeWorkspace") ?? "",
@@ -204,6 +210,9 @@ ON agent_jobs(account_id, peer_id, created_at DESC);
       this.upsertSettingSql("baseUrl", config.baseUrl, updatedAt),
       this.upsertSettingSql("cdnBaseUrl", config.cdnBaseUrl, updatedAt),
       this.upsertSettingSql("botType", config.botType, updatedAt),
+      this.upsertSettingSql("notifyToken", config.notifyToken, updatedAt),
+      this.upsertSettingSql("defaultNotifyAccountId", config.defaultNotifyAccountId, updatedAt),
+      this.upsertSettingSql("defaultNotifyPeerId", config.defaultNotifyPeerId, updatedAt),
       this.upsertSettingSql("defaultWorkspace", config.defaultWorkspace, updatedAt),
       this.upsertSettingSql("codexWorkspace", config.codexWorkspace, updatedAt),
       this.upsertSettingSql("claudeWorkspace", config.claudeWorkspace, updatedAt),
@@ -223,6 +232,29 @@ VALUES(${sqlString(key)}, ${sqlString(value)}, ${sqlNumber(updatedAt)})
 ON CONFLICT(key) DO UPDATE SET
   value = excluded.value,
   updated_at = excluded.updated_at;`;
+  }
+
+  getAuthCredentials(): { passwordHash: string; passwordSalt: string; passwordUpdatedAt: number } {
+    const rows = this.query<{ key: string; value: string }>(`
+SELECT key, value
+FROM settings
+WHERE key IN ('authPasswordHash', 'authPasswordSalt', 'authPasswordUpdatedAt');
+`);
+    const map = new Map(rows.map((row) => [row.key, row.value]));
+    return {
+      passwordHash: map.get("authPasswordHash") ?? "",
+      passwordSalt: map.get("authPasswordSalt") ?? "",
+      passwordUpdatedAt: Number(map.get("authPasswordUpdatedAt") ?? "0"),
+    };
+  }
+
+  saveAuthCredentials(params: { passwordHash: string; passwordSalt: string; passwordUpdatedAt: number }): void {
+    const statements = [
+      this.upsertSettingSql("authPasswordHash", params.passwordHash, params.passwordUpdatedAt),
+      this.upsertSettingSql("authPasswordSalt", params.passwordSalt, params.passwordUpdatedAt),
+      this.upsertSettingSql("authPasswordUpdatedAt", String(params.passwordUpdatedAt), params.passwordUpdatedAt),
+    ];
+    this.exec(statements.join("\n"));
   }
 
   listAccounts(): AccountRecord[] {

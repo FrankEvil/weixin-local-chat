@@ -2,6 +2,9 @@ export interface AppConfig {
   baseUrl: string;
   cdnBaseUrl: string;
   botType: string;
+  notifyToken: string;
+  defaultNotifyAccountId: string;
+  defaultNotifyPeerId: string;
   defaultWorkspace: string;
   codexWorkspace: string;
   claudeWorkspace: string;
@@ -140,4 +143,8 @@ export interface DebugLogQuery {
 export interface ConfigValidationResult {
   config: AppConfig;
   diagnostics: RuntimeDiagnostics;
+}
+
+export interface AuthStatusPayload {
+  authenticated: boolean;
 }

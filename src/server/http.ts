@@ -5,6 +5,7 @@ import { EventEmitter } from "node:events";
 import { URL } from "node:url";
 
 import { ChatService } from "../service/chat-service.js";
+import { AuthService } from "../service/auth-service.js";
 import type { AppConfig, DebugLogQuery, DebugLogSource, ServerEvent } from "../types.js";
 
 function json(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -22,6 +23,13 @@ function text(res: ServerResponse, statusCode: number, payload: string, contentT
     "Content-Length": Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+function unauthorized(res: ServerResponse, message: string): void {
+  json(res, 401, {
+    ok: false,
+    error: message,
+  });
 }
 
 async function readJson<T>(req: IncomingMessage): Promise<T> {
@@ -151,6 +159,9 @@ function normalizeConfig(body: Partial<AppConfig>): AppConfig {
     baseUrl: body.baseUrl ?? "",
     cdnBaseUrl: body.cdnBaseUrl ?? "",
     botType: body.botType ?? "3",
+    notifyToken: body.notifyToken ?? "",
+    defaultNotifyAccountId: body.defaultNotifyAccountId ?? "",
+    defaultNotifyPeerId: body.defaultNotifyPeerId ?? "",
     defaultWorkspace: body.defaultWorkspace ?? "",
     codexWorkspace: body.codexWorkspace ?? "",
     claudeWorkspace: body.claudeWorkspace ?? "",
@@ -191,12 +202,24 @@ function parseDebugLogQuery(url: URL): DebugLogQuery {
   return { source, level, keyword, limit };
 }
 
+function isStaticRequest(method: string, pathname: string): boolean {
+  return method === "GET" && !pathname.startsWith("/api/");
+}
+
+function isPublicApiRequest(method: string, pathname: string): boolean {
+  return (method === "GET" && pathname === "/api/health")
+    || (method === "GET" && pathname === "/api/auth/status")
+    || (method === "POST" && pathname === "/api/auth/login")
+    || (method === "POST" && pathname === "/api/notify");
+}
+
 export class AppServer {
   private readonly eventEmitter = new EventEmitter();
   private readonly sseClients = new Set<ServerResponse>();
 
   constructor(
     private readonly service: ChatService,
+    private readonly authService: AuthService,
     private readonly publicDir: string,
   ) {}
 
@@ -227,8 +250,50 @@ export class AppServer {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const pathname = url.pathname;
 
+    if (!isStaticRequest(method, pathname) && pathname.startsWith("/api/")) {
+      if (method === "POST" && pathname === "/api/notify") {
+        if (!this.authService.verifyNotifyToken(req)) {
+          unauthorized(res, "通知 token 无效");
+          return;
+        }
+      } else if (!isPublicApiRequest(method, pathname) && !this.authService.isAuthenticated(req)) {
+        unauthorized(res, "请先登录");
+        return;
+      }
+    }
+
     if (method === "GET" && pathname === "/api/health") {
       json(res, 200, { ok: true, message: "服务可用" });
+      return;
+    }
+
+    if (method === "GET" && pathname === "/api/auth/status") {
+      json(res, 200, this.authService.getStatus(req));
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/auth/login") {
+      const body = await readJson<{ password: string }>(req);
+      this.authService.login(body.password ?? "", res);
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/auth/logout") {
+      this.authService.logout(req, res);
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/auth/password") {
+      const body = await readJson<{ currentPassword: string; newPassword: string }>(req);
+      this.authService.changePassword(req, res, body.currentPassword ?? "", body.newPassword ?? "");
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/auth/notify-token/regenerate") {
+      json(res, 200, this.authService.regenerateNotifyToken());
       return;
     }
 
@@ -249,13 +314,19 @@ export class AppServer {
 
     if (method === "POST" && pathname === "/api/config") {
       const body = await readJson<Partial<AppConfig>>(req);
-      json(res, 200, this.service.saveConfig(normalizeConfig(body)));
+      json(res, 200, this.service.saveConfig(normalizeConfig({
+        ...this.service.getConfig(),
+        ...body,
+      })));
       return;
     }
 
     if (method === "POST" && pathname === "/api/config/validate") {
       const body = await readJson<Partial<AppConfig>>(req);
-      json(res, 200, await this.service.validateConfig(normalizeConfig(body)));
+      json(res, 200, await this.service.validateConfig(normalizeConfig({
+        ...this.service.getConfig(),
+        ...body,
+      })));
       return;
     }
 
@@ -390,6 +461,28 @@ export class AppServer {
         sendAsVoice?: boolean;
       }>(req);
       json(res, 200, await this.service.sendMedia(body));
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/notify") {
+      const queryPayload = {
+        accountId: url.searchParams.get("accountId") ?? undefined,
+        title: url.searchParams.get("title") ?? undefined,
+      };
+      const requestContentType = String(req.headers["content-type"] ?? "");
+      if (requestContentType.includes("application/json")) {
+        const body = await readJson<{ accountId?: string; title?: string; content?: string; text?: string }>(req);
+        json(res, 200, await this.service.sendNotification({
+          ...queryPayload,
+          ...body,
+        }));
+        return;
+      }
+      const body = (await readBodyBuffer(req)).toString("utf-8");
+      json(res, 200, await this.service.sendNotification({
+        ...queryPayload,
+        text: body,
+      }));
       return;
     }
 

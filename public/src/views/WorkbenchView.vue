@@ -13,13 +13,42 @@
         <n-button tertiary size="small" @click="toggleTheme">
           {{ isDarkMode ? '浅色主题' : '深色主题' }}
         </n-button>
-        <n-button tertiary size="small" @click="showSettings = true">设置</n-button>
-        <n-button tertiary size="small" @click="showDebug = true">调试</n-button>
-        <n-button type="primary" size="small" @click="showLogin = true">扫码登录</n-button>
+        <template v-if="workbench.authenticated">
+          <n-button tertiary size="small" @click="showSettings = true">设置</n-button>
+          <n-button tertiary size="small" @click="showDebug = true">调试</n-button>
+          <n-button type="primary" size="small" @click="showLogin = true">扫码登录</n-button>
+          <n-button tertiary size="small" :loading="logoutBusy" @click="handleLogout">退出登录</n-button>
+        </template>
       </n-space>
     </header>
 
-    <main class="board-grid">
+    <main v-if="!workbench.authChecked" class="login-gate-shell">
+      <n-spin size="large" />
+    </main>
+
+    <main v-else-if="!workbench.authenticated" class="login-gate-shell">
+      <n-card class="login-gate-card" :bordered="false">
+        <n-space vertical :size="18">
+          <div class="login-gate-card__header">
+            <span class="section-kicker">Secure Access</span>
+            <h2>登录后才能使用工作台</h2>
+          </div>
+          <n-alert type="info" :show-icon="false">
+            首次启动会在服务端控制台打印随机密码。登录后可在设置里修改密码，并管理通知 Token。
+          </n-alert>
+          <n-input
+            v-model:value="loginPassword"
+            type="password"
+            show-password-on="click"
+            placeholder="输入管理员密码"
+            @keyup.enter="handlePasswordLogin"
+          />
+          <n-button type="primary" size="large" :loading="authBusy" @click="handlePasswordLogin">登录</n-button>
+        </n-space>
+      </n-card>
+    </main>
+
+    <main v-else class="board-grid">
       <aside class="panel left-panel">
         <section class="panel-section account-section">
           <div class="section-header">
@@ -243,12 +272,17 @@
     <SettingsDrawer
       v-model="showSettings"
       :config="workbench.config"
+      :accounts="workbench.accounts"
       :diagnostics="workbench.diagnostics"
       :saving="workbench.configSaving"
       :validating="configValidating"
+      :password-changing="passwordChanging"
+      :token-rotating="tokenRotating"
       @save="handleSaveConfig"
       @validate="handleValidateConfig"
       @refresh-diagnostics="handleRefreshDiagnostics"
+      @change-password="handleChangePassword"
+      @regenerate-notify-token="handleRegenerateNotifyToken"
     />
 
     <DebugDrawer
@@ -488,6 +522,11 @@ const renameAccountTarget = ref<AccountRecord | null>(null);
 const renameDraft = ref('');
 const configValidating = ref(false);
 const loginBusy = ref(false);
+const authBusy = ref(false);
+const passwordChanging = ref(false);
+const tokenRotating = ref(false);
+const logoutBusy = ref(false);
+const loginPassword = ref('');
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const messageStreamRef = ref<HTMLElement | null>(null);
 const pendingHistoryScrollRestore = ref<{ scrollTop: number; scrollHeight: number } | null>(null);
@@ -495,6 +534,7 @@ const pendingHistoryScrollRestore = ref<{ scrollTop: number; scrollHeight: numbe
 let eventSource: EventSource | null = null;
 let reconnectTimer: number | null = null;
 let loginPollTimer: number | null = null;
+let authRequiredListener: EventListener | null = null;
 
 const isDarkMode = computed(() => themeController?.mode.value === 'dark');
 
@@ -555,20 +595,34 @@ const exportUrl = computed(() => {
 
 onMounted(async () => {
   try {
-    await workbench.initialize();
-    connectEventStream();
-    if (!workbench.accounts.length) {
-      showLogin.value = true;
+    await workbench.loadAuthStatus();
+    if (workbench.authenticated) {
+      await workbench.initialize();
+      connectEventStream();
+      if (!workbench.accounts.length) {
+        showLogin.value = true;
+      }
     }
   } catch (error) {
     messageApi.error(extractErrorMessage(error, '初始化工作台失败'));
   }
+  authRequiredListener = () => {
+    disconnectEventStream();
+    stopLoginPolling();
+    workbench.markUnauthenticated();
+    messageApi.warning('登录状态已失效，请重新登录');
+  };
+  window.addEventListener('weixin-local-chat-auth-required', authRequiredListener);
 });
 
 onBeforeUnmount(() => {
   disconnectEventStream();
   stopLoginPolling();
   revokeUploadPreview();
+  if (authRequiredListener) {
+    window.removeEventListener('weixin-local-chat-auth-required', authRequiredListener);
+    authRequiredListener = null;
+  }
 });
 
 watch(
@@ -619,6 +673,69 @@ watch(
   },
   { immediate: true },
 );
+
+async function handlePasswordLogin(): Promise<void> {
+  if (!loginPassword.value.trim()) {
+    messageApi.warning('请输入管理员密码');
+    return;
+  }
+  authBusy.value = true;
+  try {
+    await workbench.login(loginPassword.value);
+    loginPassword.value = '';
+    await workbench.initialize();
+    connectEventStream();
+    if (!workbench.accounts.length) {
+      showLogin.value = true;
+    }
+    messageApi.success('登录成功');
+  } catch (error) {
+    messageApi.error(extractErrorMessage(error, '登录失败'));
+  } finally {
+    authBusy.value = false;
+  }
+}
+
+async function handleLogout(): Promise<void> {
+  logoutBusy.value = true;
+  try {
+    await workbench.logout();
+    disconnectEventStream();
+    stopLoginPolling();
+    showSettings.value = false;
+    showDebug.value = false;
+    showLogin.value = false;
+    messageApi.success('已退出登录');
+  } catch (error) {
+    messageApi.error(extractErrorMessage(error, '退出登录失败'));
+  } finally {
+    logoutBusy.value = false;
+  }
+}
+
+async function handleChangePassword(payload: { currentPassword: string; newPassword: string }): Promise<void> {
+  passwordChanging.value = true;
+  try {
+    await workbench.changePassword(payload.currentPassword, payload.newPassword);
+    messageApi.success('密码已更新');
+  } catch (error) {
+    messageApi.error(extractErrorMessage(error, '修改密码失败'));
+  } finally {
+    passwordChanging.value = false;
+  }
+}
+
+async function handleRegenerateNotifyToken(): Promise<void> {
+  tokenRotating.value = true;
+  try {
+    await workbench.regenerateNotifyToken();
+    messageApi.success('通知 Token 已重新生成');
+  } catch (error) {
+    messageApi.error(extractErrorMessage(error, '重新生成通知 Token 失败'));
+  } finally {
+    tokenRotating.value = false;
+  }
+}
 
 async function refreshAccounts(): Promise<void> {
   try {
@@ -927,6 +1044,9 @@ function stopLoginPolling(): void {
 }
 
 function connectEventStream(): void {
+  if (!workbench.authenticated) {
+    return;
+  }
   disconnectEventStream();
   eventSource = new EventSource('/api/events');
   eventSource.onmessage = (event) => {
@@ -936,7 +1056,7 @@ function connectEventStream(): void {
   };
   eventSource.onerror = () => {
     disconnectEventStream(false);
-    if (reconnectTimer === null) {
+    if (workbench.authenticated && reconnectTimer === null) {
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         connectEventStream();
@@ -1902,6 +2022,26 @@ async function scrollMessagesToBottom(): Promise<void> {
   padding-left: 18px;
   color: var(--text-secondary);
   line-height: 1.6;
+}
+
+.login-gate-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 140px);
+}
+
+.login-gate-card {
+  width: min(460px, 100%);
+  border-radius: 28px;
+  background: color-mix(in srgb, var(--card-background) 90%, white 10%);
+  border: 1px solid var(--card-border);
+  box-shadow: 0 26px 80px rgba(15, 23, 42, 0.18);
+}
+
+.login-gate-card__header h2 {
+  margin: 6px 0 0;
+  font-size: 28px;
 }
 
 .hidden-file-input {

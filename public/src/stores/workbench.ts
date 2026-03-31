@@ -5,6 +5,7 @@ import { apiRequest, formRequest } from '@/api/client';
 import type {
   AccountRecord,
   AppConfig,
+  AuthStatusPayload,
   BootstrapPayload,
   ConfigValidationResult,
   ConversationRecord,
@@ -22,6 +23,9 @@ function emptyConfig(): AppConfig {
     baseUrl: '',
     cdnBaseUrl: '',
     botType: '3',
+    notifyToken: '',
+    defaultNotifyAccountId: '',
+    defaultNotifyPeerId: '',
     defaultWorkspace: '',
     codexWorkspace: '',
     claudeWorkspace: '',
@@ -34,6 +38,8 @@ function emptyConfig(): AppConfig {
 }
 
 export const useWorkbenchStore = defineStore('workbench', () => {
+  const authChecked = ref(false);
+  const authenticated = ref(false);
   const initialized = ref(false);
   const config = ref<AppConfig>(emptyConfig());
   const diagnostics = ref<RuntimeDiagnostics | null>(null);
@@ -93,7 +99,75 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     status.value = payload.status;
   }
 
+  function resetWorkbenchState(): void {
+    initialized.value = false;
+    config.value = emptyConfig();
+    diagnostics.value = null;
+    accounts.value = [];
+    selectedAccountId.value = '';
+    conversations.value = [];
+    selectedPeerId.value = '';
+    messages.value = [];
+    messageTotal.value = 0;
+    historyLoading.value = false;
+    historyHasMore.value = false;
+    searchQuery.value = '';
+    searchResults.value = [];
+    status.value = null;
+    debugSnapshot.value = null;
+    loginSession.value = null;
+  }
+
+  async function loadAuthStatus(): Promise<AuthStatusPayload> {
+    const payload = await apiRequest<AuthStatusPayload>('/api/auth/status');
+    authenticated.value = payload.authenticated;
+    authChecked.value = true;
+    if (!payload.authenticated) {
+      resetWorkbenchState();
+    }
+    return payload;
+  }
+
+  async function login(password: string): Promise<void> {
+    await apiRequest<{ ok: true }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    });
+    authenticated.value = true;
+    authChecked.value = true;
+  }
+
+  async function logout(): Promise<void> {
+    await apiRequest<{ ok: true }>('/api/auth/logout', {
+      method: 'POST',
+    });
+    markUnauthenticated();
+  }
+
+  async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await apiRequest<{ ok: true }>('/api/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+  }
+
+  async function regenerateNotifyToken(): Promise<AppConfig> {
+    config.value = await apiRequest<AppConfig>('/api/auth/notify-token/regenerate', {
+      method: 'POST',
+    });
+    return config.value;
+  }
+
+  function markUnauthenticated(): void {
+    authenticated.value = false;
+    authChecked.value = true;
+    resetWorkbenchState();
+  }
+
   async function initialize(): Promise<void> {
+    if (!authenticated.value) {
+      return;
+    }
     bootstrapLoading.value = true;
     try {
       const payload = await apiRequest<BootstrapPayload>('/api/bootstrap');
@@ -101,9 +175,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       if (selectedAccountId.value && !conversations.value.length) {
         await loadConversations();
       }
-    if (selectedAccountId.value && selectedPeerId.value) {
-      await loadMessages();
-    }
+      if (selectedAccountId.value && selectedPeerId.value) {
+        await loadMessages();
+      }
       await loadDiagnostics().catch(() => undefined);
       initialized.value = true;
     } finally {
@@ -485,6 +559,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   }
 
   return {
+    authChecked,
+    authenticated,
     initialized,
     config,
     diagnostics,
@@ -510,6 +586,12 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     configSaving,
     debugLoading,
     messageSending,
+    loadAuthStatus,
+    login,
+    logout,
+    changePassword,
+    regenerateNotifyToken,
+    markUnauthenticated,
     initialize,
     loadAccounts,
     selectAccount,

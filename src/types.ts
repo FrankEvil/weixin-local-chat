@@ -10,6 +10,9 @@ export interface AppConfig {
   baseUrl: string;
   cdnBaseUrl: string;
   botType: string;
+  notifyToken: string;
+  defaultNotifyAccountId: string;
+  defaultNotifyPeerId: string;
   defaultWorkspace: string;
   codexWorkspace: string;
   claudeWorkspace: string;
@@ -123,6 +126,10 @@ export interface BootstrapPayload {
   selectedPeerId: string;
   conversations: ConversationRecord[];
   status: SyncStateRecord | null;
+}
+
+export interface AuthStatusPayload {
+  authenticated: boolean;
 }
 
 export interface DebugLogEntry {

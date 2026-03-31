@@ -21,6 +21,27 @@
             </n-form>
           </n-tab-pane>
 
+          <n-tab-pane name="notify" tab="通知服务">
+            <n-form label-placement="top" :model="draft">
+              <n-form-item label="默认通知目标">
+                <n-select
+                  :value="selectedNotifyTarget"
+                  :options="notifyTargetOptions"
+                  placeholder="从已有账号/会话中选择"
+                  clearable
+                  @update:value="handleNotifyTargetChange"
+                />
+              </n-form-item>
+              <n-form-item label="通知 Token">
+                <n-input :value="draft.notifyToken" type="textarea" :autosize="{ minRows: 2, maxRows: 3 }" readonly />
+              </n-form-item>
+              <n-space justify="space-between" align="center">
+                <n-text depth="3">通知接口无需登录，但必须携带 Bearer Token。</n-text>
+                <n-button tertiary :loading="tokenRotating" @click="emit('regenerate-notify-token')">重新生成 Token</n-button>
+              </n-space>
+            </n-form>
+          </n-tab-pane>
+
           <n-tab-pane name="agent" tab="Agent 工作区">
             <n-form label-placement="top" :model="draft">
               <n-form-item label="defaultWorkspace">
@@ -87,6 +108,28 @@
               </n-grid>
             </n-space>
           </n-tab-pane>
+
+          <n-tab-pane name="security" tab="安全设置">
+            <n-space vertical :size="16">
+              <n-alert type="warning" :show-icon="false">
+                修改密码后，当前和其他浏览器会话都会重新登录。
+              </n-alert>
+              <n-form label-placement="top">
+                <n-form-item label="当前密码">
+                  <n-input v-model:value="passwordForm.currentPassword" type="password" show-password-on="click" />
+                </n-form-item>
+                <n-form-item label="新密码">
+                  <n-input v-model:value="passwordForm.newPassword" type="password" show-password-on="click" />
+                </n-form-item>
+                <n-form-item label="确认新密码">
+                  <n-input v-model:value="passwordForm.confirmPassword" type="password" show-password-on="click" />
+                </n-form-item>
+              </n-form>
+              <n-space justify="end">
+                <n-button :loading="passwordChanging" @click="handleChangePassword">修改密码</n-button>
+              </n-space>
+            </n-space>
+          </n-tab-pane>
         </n-tabs>
 
         <n-space justify="end">
@@ -100,7 +143,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, watch } from 'vue';
+import { computed, reactive, watch } from 'vue';
 import {
   NAlert,
   NButton,
@@ -118,16 +161,20 @@ import {
   NTabs,
   NTag,
   NText,
+  useMessage,
 } from 'naive-ui';
 
-import type { AppConfig, RuntimeDiagnostics } from '@/types';
+import type { AccountRecord, AppConfig, RuntimeDiagnostics } from '@/types';
 
 const props = defineProps<{
   modelValue: boolean;
   config: AppConfig;
+  accounts: AccountRecord[];
   diagnostics: RuntimeDiagnostics | null;
   saving: boolean;
   validating: boolean;
+  passwordChanging: boolean;
+  tokenRotating: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -135,7 +182,11 @@ const emit = defineEmits<{
   (event: 'save', value: AppConfig): void;
   (event: 'validate', value: AppConfig): void;
   (event: 'refresh-diagnostics'): void;
+  (event: 'change-password', value: { currentPassword: string; newPassword: string }): void;
+  (event: 'regenerate-notify-token'): void;
 }>();
+
+const message = useMessage();
 
 const modeOptions: Array<{ label: string; value: AppConfig['openclawMode'] }> = [
   { label: 'auto（优先自动检测）', value: 'auto' },
@@ -144,6 +195,21 @@ const modeOptions: Array<{ label: string; value: AppConfig['openclawMode'] }> = 
 ];
 
 const draft = reactive<AppConfig>({ ...props.config });
+const passwordForm = reactive({
+  currentPassword: '',
+  newPassword: '',
+  confirmPassword: '',
+});
+
+const notifyTargetOptions = computed(() => props.accounts
+  .filter((account) => account.latestPeerId)
+  .map((account) => ({
+    label: `${account.displayName || account.accountId} · ${account.latestConversationTitle || account.latestPeerId}`,
+    value: account.accountId,
+    peerId: account.latestPeerId,
+  })));
+
+const selectedNotifyTarget = computed(() => draft.defaultNotifyAccountId || null);
 
 watch(
   () => props.config,
@@ -153,8 +219,52 @@ watch(
   { deep: true, immediate: true },
 );
 
+watch(
+  () => [props.accounts, draft.defaultNotifyAccountId] as const,
+  () => {
+    if (!draft.defaultNotifyAccountId) {
+      return;
+    }
+    const target = notifyTargetOptions.value.find((item) => item.value === draft.defaultNotifyAccountId);
+    if (target?.peerId) {
+      draft.defaultNotifyPeerId = target.peerId;
+    }
+  },
+  { deep: true, immediate: true },
+);
+
 function formatTime(value: string): string {
   return new Date(value).toLocaleString('zh-CN', { hour12: false });
+}
+
+function handleNotifyTargetChange(value: string | null): void {
+  if (!value) {
+    draft.defaultNotifyAccountId = '';
+    draft.defaultNotifyPeerId = '';
+    return;
+  }
+  const target = notifyTargetOptions.value.find((item) => item.value === value);
+  draft.defaultNotifyAccountId = value;
+  draft.defaultNotifyPeerId = target?.peerId ?? '';
+}
+
+function handleChangePassword(): void {
+  if (!passwordForm.currentPassword.trim() || !passwordForm.newPassword.trim()) {
+    message.warning('请填写当前密码和新密码');
+    return;
+  }
+  if (passwordForm.newPassword.trim().length < 8) {
+    message.warning('新密码至少 8 位');
+    return;
+  }
+  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+    message.warning('两次输入的新密码不一致');
+    return;
+  }
+  emit('change-password', {
+    currentPassword: passwordForm.currentPassword,
+    newPassword: passwordForm.newPassword,
+  });
 }
 </script>
 
