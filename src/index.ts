@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 import { AppServer } from "./server/http.js";
@@ -7,7 +8,9 @@ import type { ServerEvent } from "./types.js";
 
 const workspaceDir = process.cwd();
 const dbPath = path.join(workspaceDir, "data", "app.sqlite");
-const publicDir = path.join(workspaceDir, "public");
+const builtPublicDir = path.join(workspaceDir, "dist", "public");
+const fallbackPublicDir = path.join(workspaceDir, "public");
+const publicDir = fs.existsSync(builtPublicDir) ? builtPublicDir : fallbackPublicDir;
 
 let appServer: AppServer;
 

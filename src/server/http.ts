@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { URL } from "node:url";
 
 import { ChatService } from "../service/chat-service.js";
-import type { ServerEvent } from "../types.js";
+import type { AppConfig, DebugLogQuery, DebugLogSource, ServerEvent } from "../types.js";
 
 function json(res: ServerResponse, statusCode: number, payload: unknown): void {
   const body = JSON.stringify(payload);
@@ -33,12 +33,103 @@ async function readJson<T>(req: IncomingMessage): Promise<T> {
   return (body ? JSON.parse(body) : {}) as T;
 }
 
+async function readBodyBuffer(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+function parseBoolean(value: string | undefined): boolean {
+  return value === "true" || value === "1" || value === "yes" || value === "on";
+}
+
+function decodeMultipartFilename(fileName: string): string {
+  const normalized = fileName.trim();
+  if (!normalized) return "upload.bin";
+  return path.basename(Buffer.from(normalized, "latin1").toString("utf-8"));
+}
+
+function parseMultipartForm(body: Buffer, contentType: string): {
+  fields: Record<string, string>;
+  file: { fieldName: string; fileName: string; mimeType: string; bytes: Buffer } | null;
+} {
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  const boundary = boundaryMatch?.[1] ?? boundaryMatch?.[2];
+  if (!boundary) {
+    throw new Error("multipart/form-data 缺少 boundary");
+  }
+
+  const marker = `--${boundary}`;
+  const raw = body.toString("latin1");
+  const parts = raw.split(marker);
+  const fields: Record<string, string> = {};
+  let file: { fieldName: string; fileName: string; mimeType: string; bytes: Buffer } | null = null;
+
+  for (const part of parts) {
+    if (!part || part === "--" || part === "--\r\n") {
+      continue;
+    }
+
+    let normalized = part;
+    if (normalized.startsWith("\r\n")) normalized = normalized.slice(2);
+    if (normalized.endsWith("\r\n")) normalized = normalized.slice(0, -2);
+    if (normalized.endsWith("--")) normalized = normalized.slice(0, -2);
+    if (!normalized) continue;
+
+    const headerEnd = normalized.indexOf("\r\n\r\n");
+    if (headerEnd < 0) continue;
+
+    const headerText = normalized.slice(0, headerEnd);
+    const bodyText = normalized.slice(headerEnd + 4);
+    const headers = Object.fromEntries(
+      headerText
+        .split("\r\n")
+        .map((line) => {
+          const index = line.indexOf(":");
+          if (index < 0) return ["", ""];
+          return [line.slice(0, index).trim().toLowerCase(), line.slice(index + 1).trim()];
+        })
+        .filter(([key]) => key),
+    );
+
+    const disposition = headers["content-disposition"] ?? "";
+    const nameMatch = disposition.match(/name="([^"]+)"/i);
+    const fileNameMatch = disposition.match(/filename="([^"]*)"/i);
+    const fieldName = nameMatch?.[1];
+    if (!fieldName) continue;
+
+    const bytes = Buffer.from(bodyText, "latin1");
+    if (fileNameMatch && fileNameMatch[1]) {
+      file = {
+        fieldName,
+        fileName: decodeMultipartFilename(fileNameMatch[1]),
+        mimeType: headers["content-type"] || "application/octet-stream",
+        bytes,
+      };
+      continue;
+    }
+
+    fields[fieldName] = bytes.toString("utf-8");
+  }
+
+  return { fields, file };
+}
+
 function guessContentType(filePath: string): string {
   if (filePath.endsWith(".html")) return "text/html; charset=utf-8";
   if (filePath.endsWith(".css")) return "text/css; charset=utf-8";
-  if (filePath.endsWith(".js")) return "application/javascript; charset=utf-8";
+  if (filePath.endsWith(".js") || filePath.endsWith(".mjs")) return "application/javascript; charset=utf-8";
+  if (filePath.endsWith(".json")) return "application/json; charset=utf-8";
+  if (filePath.endsWith(".svg")) return "image/svg+xml";
   if (filePath.endsWith(".png")) return "image/png";
   if (filePath.endsWith(".jpg") || filePath.endsWith(".jpeg")) return "image/jpeg";
+  if (filePath.endsWith(".gif")) return "image/gif";
+  if (filePath.endsWith(".webp")) return "image/webp";
+  if (filePath.endsWith(".ico")) return "image/x-icon";
+  if (filePath.endsWith(".woff2")) return "font/woff2";
+  if (filePath.endsWith(".wasm")) return "application/wasm";
   return "application/octet-stream";
 }
 
@@ -53,6 +144,51 @@ function serveFile(res: ServerResponse, filePath: string): void {
     "Content-Length": stat.size,
   });
   fs.createReadStream(filePath).pipe(res);
+}
+
+function normalizeConfig(body: Partial<AppConfig>): AppConfig {
+  return {
+    baseUrl: body.baseUrl ?? "",
+    cdnBaseUrl: body.cdnBaseUrl ?? "",
+    botType: body.botType ?? "3",
+    defaultWorkspace: body.defaultWorkspace ?? "",
+    codexWorkspace: body.codexWorkspace ?? "",
+    claudeWorkspace: body.claudeWorkspace ?? "",
+    openclawMode: body.openclawMode ?? "auto",
+    openclawWorkspace: body.openclawWorkspace ?? "",
+    openclawCommand: body.openclawCommand ?? "",
+    openclawDataDir: body.openclawDataDir ?? "",
+    openclawContainer: body.openclawContainer ?? "",
+  };
+}
+
+function resolveStaticAsset(publicDir: string, pathname: string): string {
+  if (pathname === "/") {
+    return path.join(publicDir, "index.html");
+  }
+  const decoded = decodeURIComponent(pathname);
+  const normalized = path.normalize(path.join(publicDir, decoded.replace(/^\//, "")));
+  const relative = path.relative(publicDir, normalized);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return "";
+  }
+  if (!fs.existsSync(normalized) || !fs.statSync(normalized).isFile()) {
+    return "";
+  }
+  return normalized;
+}
+
+function parseDebugLogQuery(url: URL): DebugLogQuery {
+  const source = (url.searchParams.get("logSource") ?? "all") as DebugLogSource;
+  const level = (url.searchParams.get("logLevel") ?? "all") as DebugLogQuery["level"];
+  const keyword = url.searchParams.get("logKeyword") ?? "";
+  const rawLimit = (url.searchParams.get("logLimit") ?? "all").trim().toLowerCase();
+  const limit = rawLimit === "all"
+    ? "all"
+    : Number.isFinite(Number(rawLimit)) && Number(rawLimit) > 0
+      ? Number(rawLimit)
+      : "all";
+  return { source, level, keyword, limit };
 }
 
 export class AppServer {
@@ -77,7 +213,9 @@ export class AppServer {
       try {
         await this.handle(req, res);
       } catch (error) {
+        console.error("[http]", error);
         json(res, 500, {
+          ok: false,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -99,38 +237,25 @@ export class AppServer {
       return;
     }
 
+    if (method === "GET" && pathname === "/api/runtime/diagnostics") {
+      json(res, 200, await this.service.getRuntimeDiagnostics());
+      return;
+    }
+
     if (method === "GET" && pathname === "/api/config") {
       json(res, 200, this.service.getConfig());
       return;
     }
 
     if (method === "POST" && pathname === "/api/config") {
-      const body = await readJson<{
-        baseUrl: string;
-        cdnBaseUrl: string;
-        botType: string;
-        defaultWorkspace: string;
-        codexWorkspace: string;
-        claudeWorkspace: string;
-        openclawMode: "auto" | "docker" | "local";
-        openclawWorkspace: string;
-        openclawCommand: string;
-        openclawDataDir: string;
-        openclawContainer: string;
-      }>(req);
-      json(res, 200, this.service.saveConfig({
-        baseUrl: body.baseUrl ?? "",
-        cdnBaseUrl: body.cdnBaseUrl ?? "",
-        botType: body.botType ?? "3",
-        defaultWorkspace: body.defaultWorkspace ?? "",
-        codexWorkspace: body.codexWorkspace ?? "",
-        claudeWorkspace: body.claudeWorkspace ?? "",
-        openclawMode: body.openclawMode ?? "auto",
-        openclawWorkspace: body.openclawWorkspace ?? "",
-        openclawCommand: body.openclawCommand ?? "",
-        openclawDataDir: body.openclawDataDir ?? "",
-        openclawContainer: body.openclawContainer ?? "",
-      }));
+      const body = await readJson<Partial<AppConfig>>(req);
+      json(res, 200, this.service.saveConfig(normalizeConfig(body)));
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/config/validate") {
+      const body = await readJson<Partial<AppConfig>>(req);
+      json(res, 200, await this.service.validateConfig(normalizeConfig(body)));
       return;
     }
 
@@ -142,6 +267,25 @@ export class AppServer {
     if (method === "POST" && pathname === "/api/accounts/select") {
       const body = await readJson<{ accountId: string }>(req);
       json(res, 200, this.service.selectAccount(body.accountId));
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/accounts/update") {
+      const body = await readJson<{ accountId: string; displayName: string }>(req);
+      json(res, 200, this.service.renameAccount(body.accountId, body.displayName));
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/accounts/history/clear") {
+      const body = await readJson<{ accountId: string }>(req);
+      json(res, 200, this.service.clearAccountHistory(body.accountId));
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/accounts/delete") {
+      const body = await readJson<{ accountId: string }>(req);
+      this.service.deleteAccount(body.accountId);
+      json(res, 200, { ok: true });
       return;
     }
 
@@ -184,7 +328,21 @@ export class AppServer {
     if (method === "GET" && pathname === "/api/messages") {
       const accountId = url.searchParams.get("accountId") ?? "";
       const peerId = url.searchParams.get("peerId") ?? "";
-      json(res, 200, this.service.listMessages(accountId, peerId));
+      const beforeCreatedAt = Number(url.searchParams.get("before") ?? "0");
+      const limit = Number(url.searchParams.get("limit") ?? "60");
+      json(res, 200, this.service.listMessages(
+        accountId,
+        peerId,
+        Number.isFinite(beforeCreatedAt) ? beforeCreatedAt : 0,
+        Number.isFinite(limit) && limit > 0 ? limit : 60,
+      ));
+      return;
+    }
+
+    if (method === "GET" && pathname === "/api/messages/count") {
+      const accountId = url.searchParams.get("accountId") ?? "";
+      const peerId = url.searchParams.get("peerId") ?? "";
+      json(res, 200, { total: this.service.countMessages(accountId, peerId) });
       return;
     }
 
@@ -203,12 +361,31 @@ export class AppServer {
     }
 
     if (method === "POST" && pathname === "/api/messages/media") {
+      const requestContentType = String(req.headers["content-type"] ?? "");
+      if (requestContentType.includes("multipart/form-data")) {
+        const multipart = parseMultipartForm(await readBodyBuffer(req), requestContentType);
+        if (!multipart.file) {
+          json(res, 400, { ok: false, error: "未检测到上传文件" });
+          return;
+        }
+        json(res, 200, await this.service.sendMedia({
+          accountId: multipart.fields.accountId ?? "",
+          peerId: multipart.fields.peerId ?? "",
+          fileName: multipart.file.fileName,
+          mimeType: multipart.file.mimeType,
+          bytes: multipart.file.bytes,
+          caption: multipart.fields.caption ?? "",
+          sendAsVoice: parseBoolean(multipart.fields.sendAsVoice),
+        }));
+        return;
+      }
+
       const body = await readJson<{
         accountId: string;
         peerId: string;
         fileName: string;
         mimeType: string;
-        bytesBase64: string;
+        bytesBase64?: string;
         caption: string;
         sendAsVoice?: boolean;
       }>(req);
@@ -249,7 +426,14 @@ export class AppServer {
 
     if (method === "GET" && pathname === "/api/debug") {
       const accountId = url.searchParams.get("accountId") ?? "";
-      json(res, 200, this.service.getDebugSnapshot(accountId));
+      json(res, 200, this.service.getDebugSnapshot(accountId, parseDebugLogQuery(url)));
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/debug/logs/clear") {
+      const body = await readJson<{ source?: DebugLogSource }>(req);
+      this.service.clearDebugLogs(body.source ?? "all");
+      json(res, 200, { ok: true });
       return;
     }
 
@@ -259,7 +443,7 @@ export class AppServer {
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
-      res.write("data: " + JSON.stringify({ type: "bootstrap" }) + "\n\n");
+      res.write(`data: ${JSON.stringify({ type: "bootstrap" })}\n\n`);
       this.sseClients.add(res);
       req.on("close", () => {
         this.sseClients.delete(res);
@@ -267,13 +451,13 @@ export class AppServer {
       return;
     }
 
-    if (method === "GET" && pathname === "/") {
+    if (method === "GET" && !pathname.startsWith("/api/")) {
+      const assetPath = resolveStaticAsset(this.publicDir, pathname);
+      if (assetPath) {
+        serveFile(res, assetPath);
+        return;
+      }
       serveFile(res, path.join(this.publicDir, "index.html"));
-      return;
-    }
-
-    if (method === "GET" && (pathname === "/app.css" || pathname === "/app.js")) {
-      serveFile(res, path.join(this.publicDir, pathname.slice(1)));
       return;
     }
 

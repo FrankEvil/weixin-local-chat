@@ -1,0 +1,119 @@
+:root {
+  font-family: 'Avenir Next', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --app-background:
+    radial-gradient(circle at top left, rgba(91, 173, 255, 0.18), transparent 30%),
+    radial-gradient(circle at top right, rgba(39, 190, 159, 0.12), transparent 24%),
+    linear-gradient(180deg, #f7fbff 0%, #edf5fb 42%, #e7f0f7 100%);
+  --shell-background: transparent;
+  --text-primary: #122033;
+  --text-secondary: rgba(18, 32, 51, 0.72);
+  --text-tertiary: rgba(18, 32, 51, 0.56);
+  --accent-soft: rgba(16, 140, 118, 0.84);
+  --ambient-left: rgba(72, 187, 255, 0.42);
+  --ambient-right: rgba(54, 194, 162, 0.28);
+  --panel-background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(244, 249, 252, 0.92)),
+    rgba(255, 255, 255, 0.88);
+  --panel-border: rgba(22, 56, 86, 0.08);
+  --panel-shadow: 0 22px 60px rgba(56, 87, 120, 0.14);
+  --card-background: rgba(255, 255, 255, 0.6);
+  --card-background-active: linear-gradient(135deg, rgba(203, 245, 236, 0.92), rgba(231, 243, 255, 0.92));
+  --card-border: rgba(23, 73, 102, 0.1);
+  --card-border-active: rgba(25, 154, 130, 0.42);
+  --hero-background:
+    linear-gradient(140deg, rgba(208, 243, 236, 0.96), rgba(228, 240, 255, 0.94)),
+    rgba(255, 255, 255, 0.92);
+  --hero-border: rgba(57, 163, 143, 0.2);
+  --status-chip-background: rgba(255, 255, 255, 0.58);
+  --bubble-background: rgba(255, 255, 255, 0.7);
+  --bubble-highlight: rgba(255, 255, 255, 0.36);
+  --bubble-outbound-background: linear-gradient(135deg, rgba(200, 237, 255, 0.96), rgba(218, 247, 241, 0.96));
+  --bubble-inbound-background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(240, 245, 251, 0.96));
+  --composer-background: rgba(255, 255, 255, 0.62);
+  --file-chip-background: rgba(23, 156, 130, 0.12);
+  --link-color: #0d8670;
+  --success-color: #118c6a;
+  --error-color: #d45767;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --app-background:
+    radial-gradient(circle at top left, rgba(72, 187, 255, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(54, 194, 162, 0.16), transparent 24%),
+    linear-gradient(180deg, #08111f 0%, #0c1727 42%, #0a1220 100%);
+  --shell-background: transparent;
+  --text-primary: #edf4ff;
+  --text-secondary: rgba(231, 239, 255, 0.72);
+  --text-tertiary: rgba(231, 239, 255, 0.58);
+  --accent-soft: rgba(121, 222, 207, 0.84);
+  --ambient-left: rgba(56, 189, 248, 0.55);
+  --ambient-right: rgba(45, 212, 191, 0.42);
+  --panel-background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
+    rgba(5, 10, 20, 0.74);
+  --panel-border: rgba(255, 255, 255, 0.07);
+  --panel-shadow: 0 24px 90px rgba(4, 10, 24, 0.42);
+  --card-background: rgba(255, 255, 255, 0.02);
+  --card-background-active: linear-gradient(135deg, rgba(44, 83, 100, 0.32), rgba(18, 33, 56, 0.6));
+  --card-border: rgba(255, 255, 255, 0.06);
+  --card-border-active: rgba(85, 192, 174, 0.56);
+  --hero-background:
+    linear-gradient(140deg, rgba(52, 211, 153, 0.18), rgba(59, 130, 246, 0.1)),
+    rgba(8, 18, 34, 0.8);
+  --hero-border: rgba(120, 220, 194, 0.12);
+  --status-chip-background: rgba(255, 255, 255, 0.03);
+  --bubble-background: rgba(255, 255, 255, 0.04);
+  --bubble-highlight: rgba(255, 255, 255, 0.04);
+  --bubble-outbound-background: linear-gradient(135deg, rgba(53, 129, 210, 0.28), rgba(38, 102, 120, 0.34));
+  --bubble-inbound-background: linear-gradient(135deg, rgba(255, 255, 255, 0.04), rgba(24, 33, 52, 0.54));
+  --composer-background: rgba(255, 255, 255, 0.03);
+  --file-chip-background: rgba(51, 204, 178, 0.12);
+  --link-color: #a7fff0;
+  --success-color: #93ffe0;
+  --error-color: #ff92a5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  min-height: 100vh;
+}
+
+body {
+  color: var(--text-primary);
+  background: var(--app-background);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(127, 149, 181, 0.28);
+  border-radius: 999px;
+}

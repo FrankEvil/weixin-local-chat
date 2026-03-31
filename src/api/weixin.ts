@@ -46,6 +46,9 @@ export interface WeixinMessage {
 
 export interface MessageItem {
   type?: number;
+  create_time_ms?: number;
+  update_time_ms?: number;
+  is_completed?: boolean;
   text_item?: { text?: string };
   image_item?: {
     media?: CDNMedia;
@@ -104,6 +107,14 @@ export interface WeixinClientOptions {
 export interface UploadUrlResp {
   upload_param?: string;
   thumb_upload_param?: string;
+  upload_full_url?: string;
+  thumb_upload_full_url?: string;
+}
+
+interface WeixinApiResult {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
 }
 
 function ensureTrailingSlash(url: string): string {
@@ -145,6 +156,18 @@ function headersToObject(headers: Headers): Record<string, string> {
 
 function bodySha256(body: string): string {
   return crypto.createHash("sha256").update(body).digest("hex");
+}
+
+function parseWeixinApiResult(text: string): WeixinApiResult | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed) as WeixinApiResult;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchText(url: string, init: RequestInit, timeoutMs: number): Promise<string> {
@@ -254,6 +277,10 @@ export class WeixinClient {
       const text = await response.text();
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}: ${text}`);
+      }
+      const parsed = parseWeixinApiResult(text);
+      if ((parsed?.ret ?? 0) !== 0 || (parsed?.errcode ?? 0) !== 0) {
+        throw new Error(`sendMessage failed: ret=${parsed?.ret ?? 0} errcode=${parsed?.errcode ?? 0} errmsg=${parsed?.errmsg ?? ""}`.trim());
       }
       logWeixinApi("sendmessage_response", {
         baseUrl: this.options.baseUrl,

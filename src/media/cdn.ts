@@ -44,6 +44,16 @@ function fileExt(name: string): string {
   return path.extname(name).toLowerCase();
 }
 
+function resolveUploadUrl(cdnBaseUrl: string, uploadResp: { upload_param?: string; upload_full_url?: string }, filekey: string): string {
+  if (uploadResp.upload_full_url?.trim()) {
+    return uploadResp.upload_full_url.trim();
+  }
+  if (uploadResp.upload_param?.trim()) {
+    return buildCdnUploadUrl(cdnBaseUrl, uploadResp.upload_param.trim(), filekey);
+  }
+  throw new Error("getUploadUrl missing upload target");
+}
+
 export function detectUploadKind(fileName: string, mimeType: string): UploadKind {
   const lowerMime = mimeType.toLowerCase();
   const ext = fileExt(fileName);
@@ -279,13 +289,9 @@ export async function uploadMedia(params: {
     filesize,
     uploadMediaType: toUploadMediaType(kind),
     uploadParamPresent: Boolean(uploadResp.upload_param),
+    uploadFullUrlPresent: Boolean(uploadResp.upload_full_url),
   });
-
-  if (!uploadResp.upload_param) {
-    throw new Error("getUploadUrl missing upload_param");
-  }
-
-  const uploadUrl = buildCdnUploadUrl(params.cdnBaseUrl, uploadResp.upload_param, filekey);
+  const uploadUrl = resolveUploadUrl(params.cdnBaseUrl, uploadResp, filekey);
   const encrypted = encryptAesEcb(params.bytes, aesKey);
   const response = await fetch(uploadUrl, {
     method: "POST",

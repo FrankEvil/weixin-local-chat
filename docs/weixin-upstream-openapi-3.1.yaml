@@ -1,0 +1,510 @@
+openapi: 3.1.0
+info:
+  title: Weixin Upstream Communication API
+  version: 0.1.0
+  summary: weixin-local-chat 依赖的微信上游接口
+  description: >
+    根据 src/api/weixin.ts 的实际调用逻辑整理。实际基础地址由本地配置 baseUrl
+    提供，默认值为 https://ilinkai.weixin.qq.com。
+servers:
+  - url: https://ilinkai.weixin.qq.com
+    description: 默认微信上游地址
+tags:
+  - name: Login
+    description: 扫码登录相关接口
+  - name: Message
+    description: 消息收发相关接口
+  - name: Media
+    description: 媒体上传相关接口
+  - name: Config
+    description: 会话配置与输入状态相关接口
+paths:
+  /ilink/bot/get_bot_qrcode:
+    get:
+      tags:
+        - Login
+      summary: 获取扫码登录二维码
+      operationId: getBotQrCode
+      parameters:
+        - name: bot_type
+          in: query
+          required: true
+          description: 机器人类型，当前项目默认值为 3
+          schema:
+            type: string
+            example: "3"
+      responses:
+        "200":
+          description: 二维码信息
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QrCodeResponse"
+        "500":
+          $ref: "#/components/responses/UpstreamError"
+
+  /ilink/bot/get_qrcode_status:
+    get:
+      tags:
+        - Login
+      summary: 查询二维码状态
+      operationId: getQrCodeStatus
+      parameters:
+        - $ref: "#/components/parameters/ClientVersionHeader"
+        - name: qrcode
+          in: query
+          required: true
+          description: 二维码标识
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 二维码状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QrStatusResponse"
+        "500":
+          $ref: "#/components/responses/UpstreamError"
+
+  /ilink/bot/getupdates:
+    post:
+      tags:
+        - Message
+      summary: 长轮询拉取消息更新
+      operationId: getUpdates
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationTypeHeader"
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/WechatUinHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GetUpdatesRequest"
+      responses:
+        "200":
+          description: 消息增量结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetUpdatesResp"
+        "500":
+          $ref: "#/components/responses/UpstreamError"
+
+  /ilink/bot/sendmessage:
+    post:
+      tags:
+        - Message
+      summary: 发送微信消息
+      operationId: sendMessage
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationTypeHeader"
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/WechatUinHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+      responses:
+        "200":
+          description: 上游返回原始文本；当前项目未约束固定 JSON 结构
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+        "500":
+          $ref: "#/components/responses/UpstreamError"
+
+  /ilink/bot/getuploadurl:
+    post:
+      tags:
+        - Media
+      summary: 获取媒体上传参数
+      operationId: getUploadUrl
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationTypeHeader"
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/WechatUinHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GetUploadUrlRequest"
+      responses:
+        "200":
+          description: 上传参数
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadUrlResp"
+        "500":
+          $ref: "#/components/responses/UpstreamError"
+
+  /ilink/bot/getconfig:
+    post:
+      tags:
+        - Config
+      summary: 获取会话配置
+      operationId: getConfig
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationTypeHeader"
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/WechatUinHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GetConfigRequest"
+      responses:
+        "200":
+          description: 会话配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetConfigResponse"
+        "500":
+          $ref: "#/components/responses/UpstreamError"
+
+  /ilink/bot/sendtyping:
+    post:
+      tags:
+        - Config
+      summary: 发送输入状态
+      operationId: sendTyping
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationTypeHeader"
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/WechatUinHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendTypingRequest"
+      responses:
+        "200":
+          description: 上游返回原始文本；当前项目未约束固定 JSON 结构
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+        "500":
+          $ref: "#/components/responses/UpstreamError"
+
+components:
+  parameters:
+    ClientVersionHeader:
+      name: iLink-App-ClientVersion
+      in: header
+      required: true
+      description: 查询二维码状态时固定传 1
+      schema:
+        type: string
+        example: "1"
+    AuthorizationTypeHeader:
+      name: AuthorizationType
+      in: header
+      required: true
+      description: 当前固定值为 ilink_bot_token
+      schema:
+        type: string
+        example: ilink_bot_token
+    AuthorizationHeader:
+      name: Authorization
+      in: header
+      required: true
+      description: Bearer 机器人 token
+      schema:
+        type: string
+        example: Bearer bot-token
+    WechatUinHeader:
+      name: X-WECHAT-UIN
+      in: header
+      required: true
+      description: 随机生成的 base64 字符串
+      schema:
+        type: string
+        example: MTIzNDU2Nzg=
+  responses:
+    UpstreamError:
+      description: 上游接口异常
+      content:
+        text/plain:
+          schema:
+            type: string
+  schemas:
+    BaseInfo:
+      type: object
+      properties:
+        channel_version:
+          type: string
+          example: weixin-local-chat/0.1.0
+      required:
+        - channel_version
+
+    QrCodeResponse:
+      type: object
+      properties:
+        qrcode:
+          type: string
+        qrcode_img_content:
+          type: string
+          description: 二维码图片内容，通常为 data URL
+      required:
+        - qrcode
+        - qrcode_img_content
+
+    QrStatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - wait
+            - scaned
+            - confirmed
+            - expired
+        bot_token:
+          type: string
+        ilink_bot_id:
+          type: string
+        baseurl:
+          type: string
+        ilink_user_id:
+          type: string
+      required:
+        - status
+
+    GetUpdatesRequest:
+      type: object
+      properties:
+        get_updates_buf:
+          type: string
+        base_info:
+          $ref: "#/components/schemas/BaseInfo"
+      required:
+        - get_updates_buf
+        - base_info
+
+    GetUpdatesResp:
+      type: object
+      properties:
+        ret:
+          type: integer
+        errcode:
+          type: integer
+          description: -14 表示 session 失效
+        errmsg:
+          type: string
+        msgs:
+          type: array
+          items:
+            $ref: "#/components/schemas/WeixinMessage"
+        get_updates_buf:
+          type: string
+        longpolling_timeout_ms:
+          type: integer
+          format: int64
+      additionalProperties: true
+
+    SendMessageRequest:
+      type: object
+      properties:
+        msg:
+          $ref: "#/components/schemas/WeixinMessage"
+        base_info:
+          $ref: "#/components/schemas/BaseInfo"
+      required:
+        - msg
+        - base_info
+
+    WeixinMessage:
+      type: object
+      properties:
+        seq:
+          type: integer
+        message_id:
+          type: integer
+        from_user_id:
+          type: string
+        to_user_id:
+          type: string
+        client_id:
+          type: string
+        create_time_ms:
+          type: integer
+          format: int64
+        session_id:
+          type: string
+        message_type:
+          type: integer
+        message_state:
+          type: integer
+        item_list:
+          type: array
+          items:
+            $ref: "#/components/schemas/MessageItem"
+        context_token:
+          type: string
+      additionalProperties: true
+
+    MessageItem:
+      type: object
+      properties:
+        type:
+          type: integer
+          enum:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+        text_item:
+          type: object
+          properties:
+            text:
+              type: string
+        image_item:
+          type: object
+          properties:
+            media:
+              $ref: "#/components/schemas/CDNMedia"
+            aeskey:
+              type: string
+            mid_size:
+              type: integer
+        voice_item:
+          type: object
+          properties:
+            media:
+              $ref: "#/components/schemas/CDNMedia"
+            text:
+              type: string
+        file_item:
+          type: object
+          properties:
+            media:
+              $ref: "#/components/schemas/CDNMedia"
+            file_name:
+              type: string
+            len:
+              type: string
+        video_item:
+          type: object
+          properties:
+            media:
+              $ref: "#/components/schemas/CDNMedia"
+            video_size:
+              type: integer
+        ref_msg:
+          type: object
+          properties:
+            title:
+              type: string
+            message_item:
+              $ref: "#/components/schemas/MessageItem"
+      additionalProperties: true
+
+    CDNMedia:
+      type: object
+      properties:
+        encrypt_query_param:
+          type: string
+        aes_key:
+          type: string
+        encrypt_type:
+          type: integer
+      additionalProperties: true
+
+    GetUploadUrlRequest:
+      type: object
+      properties:
+        filekey:
+          type: string
+        media_type:
+          type: integer
+          description: 1=image，2=video，3=file
+        to_user_id:
+          type: string
+        rawsize:
+          type: integer
+          format: int64
+        rawfilemd5:
+          type: string
+        filesize:
+          type: integer
+          format: int64
+        no_need_thumb:
+          type: boolean
+        aeskey:
+          type: string
+        base_info:
+          $ref: "#/components/schemas/BaseInfo"
+      required:
+        - filekey
+        - media_type
+        - to_user_id
+        - rawsize
+        - rawfilemd5
+        - filesize
+        - no_need_thumb
+        - aeskey
+        - base_info
+
+    UploadUrlResp:
+      type: object
+      properties:
+        upload_param:
+          type: string
+        thumb_upload_param:
+          type: string
+      additionalProperties: true
+
+    GetConfigRequest:
+      type: object
+      properties:
+        ilink_user_id:
+          type: string
+        context_token:
+          type: string
+        base_info:
+          $ref: "#/components/schemas/BaseInfo"
+      required:
+        - ilink_user_id
+        - context_token
+        - base_info
+
+    GetConfigResponse:
+      type: object
+      properties:
+        typing_ticket:
+          type: string
+      additionalProperties: true
+
+    SendTypingRequest:
+      type: object
+      properties:
+        ilink_user_id:
+          type: string
+        typing_ticket:
+          type: string
+        status:
+          type: integer
+          enum:
+            - 1
+            - 2
+        base_info:
+          $ref: "#/components/schemas/BaseInfo"
+      required:
+        - ilink_user_id
+        - typing_ticket
+        - status
+        - base_info

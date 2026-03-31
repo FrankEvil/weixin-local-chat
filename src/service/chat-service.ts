@@ -16,16 +16,23 @@ import {
   transcodeSilkFileToWav,
   uploadMedia,
   uploadedMediaToItem,
+  type UploadedMedia,
   type VoiceItemMetadata,
 } from "../media/cdn.js";
+import { appendJsonlLog, clearJsonlLog, readRecentJsonlLogs } from "../utils/jsonl-log.js";
 import { AgentRouter } from "./agent-router.js";
 import { SqliteStore } from "../store/sqlite.js";
 import type {
   AccountRecord,
   AppConfig,
   ConversationRecord,
+  DebugLogQuery,
+  DebugLogEntry,
+  DebugLogSource,
+  DebugSnapshot,
   LoginSessionRecord,
   MessageRecord,
+  RuntimeDiagnostics,
   ServerEvent,
 } from "../types.js";
 
@@ -53,6 +60,47 @@ function nowMs(): number {
 function buildDisplayName(userId: string): string {
   const suffix = userId.slice(0, 8) || "unknown";
   return `微信账号 ${suffix}`;
+}
+
+function maskSecret(value: string): string {
+  if (!value) return "";
+  if (value.length <= 12) return `${value.slice(0, 2)}***${value.slice(-2)}`;
+  return `${value.slice(0, 6)}***${value.slice(-4)}`;
+}
+
+function summarizeLogEvent(source: string, event: string, payload: Record<string, unknown>): string {
+  const provider = typeof payload.provider === "string" ? payload.provider : "";
+  const peerId = typeof payload.peerId === "string" ? payload.peerId : "";
+  const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
+  const error = typeof payload.error === "string" ? payload.error : "";
+  const status = typeof payload.status === "number" ? String(payload.status) : "";
+  const clientId = typeof payload.clientId === "string" ? payload.clientId : "";
+
+  if (source === "agent-router" && event === "job_started") {
+    return `${provider || "agent"} 开始处理${peerId ? ` ${peerId}` : ""}${prompt ? `：${prompt.slice(0, 40)}` : ""}`;
+  }
+  if (source === "agent-router" && event === "job_failed") {
+    return `${provider || "agent"} 执行失败${error ? `：${error.slice(0, 80)}` : ""}`;
+  }
+  if (source === "agent-router" && event === "job_succeeded") {
+    return `${provider || "agent"} 执行完成`;
+  }
+  if (source === "weixin-api" && event.endsWith("_request")) {
+    return `${event.replace("_request", "")} 请求已发出${clientId ? `（${clientId}）` : ""}`;
+  }
+  if (source === "weixin-api" && event.endsWith("_response")) {
+    return `${event.replace("_response", "")} 响应 ${status || "-"}`;
+  }
+  if (source === "weixin-api" && event.endsWith("_error")) {
+    return `${event.replace("_error", "")} 请求失败${error ? `：${error.slice(0, 80)}` : ""}`;
+  }
+  if (source === "weixin-media") {
+    return `${event}${peerId ? ` · ${peerId}` : ""}`;
+  }
+  if (source === "chat-service") {
+    return event.replace(/_/g, " ");
+  }
+  return event;
 }
 
 function messageTypeFromItem(item?: MessageItem): MessageRecord["messageType"] {
@@ -103,12 +151,18 @@ function inferMimeType(item: MessageItem): string {
 }
 
 interface VoiceMessageTemplate {
+  item: MessageItem;
   metadata: VoiceItemMetadata;
   text: string;
 }
 
 const FORCE_ECHO_LATEST_INBOUND_VOICE = false;
-const FORCE_AUDIO_AS_FILE = true;
+const DEBUG_LOG_SOURCES = [
+  { source: "chat-service", fileName: "chat-service.jsonl" },
+  { source: "agent-router", fileName: "agent-router.jsonl" },
+  { source: "weixin-api", fileName: "weixin-api.jsonl" },
+  { source: "weixin-media", fileName: "weixin-media.jsonl" },
+] as const;
 
 export class ChatService {
   private readonly loginSessions = new Map<string, LoginSessionRecord>();
@@ -140,6 +194,17 @@ export class ChatService {
     return this.store.getBootstrap();
   }
 
+  async getRuntimeDiagnostics(configOverride?: AppConfig): Promise<RuntimeDiagnostics> {
+    return this.agentRouter.getRuntimeDiagnostics(configOverride);
+  }
+
+  async validateConfig(config: AppConfig): Promise<{ config: AppConfig; diagnostics: RuntimeDiagnostics }> {
+    return {
+      config,
+      diagnostics: await this.getRuntimeDiagnostics(config),
+    };
+  }
+
   getConfig(): AppConfig {
     return this.store.getConfig();
   }
@@ -160,6 +225,46 @@ export class ChatService {
     return this.store.getAccount(accountId);
   }
 
+  renameAccount(accountId: string, displayName: string): AccountRecord | null {
+    const nextName = displayName.trim();
+    if (!nextName) {
+      throw new Error("账号名称不能为空");
+    }
+    const account = this.store.updateAccountDisplayName(accountId, nextName);
+    this.emit({ type: "accounts", accountId });
+    return account;
+  }
+
+  clearAccountHistory(accountId: string): AccountRecord | null {
+    const account = this.mustAccount(accountId);
+    this.store.clearAccountHistory(accountId);
+    this.removeAccountDataDirs(accountId);
+    this.logRuntime("account_history_cleared", {
+      accountId,
+      displayName: account.displayName,
+    });
+    this.emit({ type: "accounts", accountId });
+    this.emit({ type: "conversations", accountId });
+    this.emit({ type: "messages", accountId });
+    this.emit({ type: "status", accountId, payload: { message: "account_history_cleared" } });
+    return this.store.getAccount(accountId);
+  }
+
+  deleteAccount(accountId: string): void {
+    const account = this.mustAccount(accountId);
+    this.stopMonitor(accountId);
+    this.store.deleteAccount(accountId);
+    this.removeAccountDataDirs(accountId);
+    this.logRuntime("account_deleted", {
+      accountId,
+      displayName: account.displayName,
+    });
+    this.emit({ type: "accounts", accountId });
+    this.emit({ type: "conversations", accountId });
+    this.emit({ type: "messages", accountId });
+    this.emit({ type: "status", accountId, payload: { message: "account_deleted" } });
+  }
+
   listConversations(accountId: string): ConversationRecord[] {
     return this.store.listConversations(accountId);
   }
@@ -170,8 +275,12 @@ export class ChatService {
     return conversation;
   }
 
-  listMessages(accountId: string, peerId: string): MessageRecord[] {
-    return this.store.listMessages(accountId, peerId);
+  listMessages(accountId: string, peerId: string, beforeCreatedAt = 0, limit = 60): MessageRecord[] {
+    return this.store.listMessages(accountId, peerId, beforeCreatedAt, limit);
+  }
+
+  countMessages(accountId: string, peerId: string): number {
+    return this.store.countMessages(accountId, peerId);
   }
 
   searchMessages(accountId: string, queryText: string, peerId = ""): MessageRecord[] {
@@ -197,16 +306,26 @@ export class ChatService {
     };
   }
 
-  getDebugSnapshot(accountId: string) {
+  getDebugSnapshot(accountId: string, query?: DebugLogQuery): DebugSnapshot {
     const account = accountId ? this.store.getAccount(accountId) : null;
     return {
       config: this.store.getConfig(),
-      account,
+      account: account ? { ...account, token: maskSecret(account.token) } : null,
       syncState: account ? this.store.getSyncState(accountId) : null,
       stats: account ? this.store.getAccountStats(accountId) : { conversationCount: 0, messageCount: 0 },
       agentBindings: account ? this.store.listAgentBindings(accountId) : [],
       agentSessions: account ? this.store.listAgentSessions(accountId) : [],
+      recentLogs: this.collectDebugLogs(accountId, query),
     };
+  }
+
+  clearDebugLogs(source: DebugLogSource = "all"): void {
+    const targets = source === "all"
+      ? DEBUG_LOG_SOURCES
+      : DEBUG_LOG_SOURCES.filter((entry) => entry.source === source);
+    for (const entry of targets) {
+      clearJsonlLog(entry.fileName);
+    }
   }
 
   markConversationRead(accountId: string, peerId: string): void {
@@ -246,6 +365,12 @@ export class ChatService {
     const client = new WeixinClient({ baseUrl: session.baseUrl });
     try {
       const status = await client.pollQrStatus(session.qrcode);
+      this.logRuntime("login_poll", {
+        sessionKey,
+        status: status.status,
+        userId: status.ilink_user_id ?? "",
+        accountId: status.ilink_bot_id ?? "",
+      });
       session.lastCheckedAt = nowMs();
       session.status = status.status;
       if (status.status === "confirmed" && status.bot_token && status.ilink_bot_id && status.ilink_user_id) {
@@ -258,7 +383,7 @@ export class ChatService {
           baseUrl: status.baseurl || session.baseUrl,
           cdnBaseUrl: session.cdnBaseUrl,
           lastLoginAt: nowMs(),
-          isSelected: isFirstAccount || true,
+          isSelected: isFirstAccount,
         });
         this.startMonitor(status.ilink_bot_id);
         this.emit({ type: "accounts", accountId: status.ilink_bot_id });
@@ -266,6 +391,10 @@ export class ChatService {
       this.loginSessions.set(sessionKey, session);
       return session;
     } catch (error) {
+      this.logRuntime("login_poll_error", {
+        sessionKey,
+        error,
+      });
       session.status = "error";
       session.error = error instanceof Error ? error.message : String(error);
       session.lastCheckedAt = nowMs();
@@ -276,6 +405,11 @@ export class ChatService {
 
   async sendText(params: { accountId: string; peerId: string; text: string }): Promise<MessageRecord> {
     const account = this.mustAccount(params.accountId);
+    this.logRuntime("send_text_started", {
+      accountId: account.accountId,
+      peerId: params.peerId,
+      textPreview: params.text.slice(0, 120),
+    });
     if (FORCE_ECHO_LATEST_INBOUND_VOICE) {
       const echoed = await this.sendLatestInboundVoice(account, params.peerId);
       if (echoed) return echoed;
@@ -311,14 +445,10 @@ export class ChatService {
     });
     this.emit({ type: "messages", accountId: account.accountId, peerId: params.peerId });
 
+    let typingTicket = "";
     try {
-      const typing = await client
-        .getConfig(params.peerId, conversation?.contextToken ?? "")
-        .catch((): { typing_ticket?: string } => ({}));
-      if (typing.typing_ticket) {
-        await client.sendTyping(params.peerId, typing.typing_ticket, 1).catch(() => undefined);
-      }
-      await client.sendMessage({
+      typingTicket = await this.prepareConversationForSend(client, params.peerId, conversation?.contextToken ?? "");
+      await this.sendMessageWithContextFallback(client, {
         to_user_id: params.peerId,
         client_id: messageId,
         message_type: 2,
@@ -326,14 +456,23 @@ export class ChatService {
         item_list: [{ type: 1, text_item: { text: params.text } }],
         context_token: conversation?.contextToken || undefined,
       });
-      if (typing.typing_ticket) {
-        await client.sendTyping(params.peerId, typing.typing_ticket, 2).catch(() => undefined);
-      }
       this.store.updateMessageStatus(messageId, "sent", messageId);
+      this.logRuntime("send_text_succeeded", {
+        accountId: account.accountId,
+        peerId: params.peerId,
+        messageId,
+      });
     } catch (error) {
       this.store.updateMessageStatus(messageId, "failed");
+      this.logRuntime("send_text_failed", {
+        accountId: account.accountId,
+        peerId: params.peerId,
+        messageId,
+        error,
+      });
       throw error;
     } finally {
+      await this.finishConversationSend(client, params.peerId, typingTicket);
       this.emit({ type: "messages", accountId: account.accountId, peerId: params.peerId });
       this.emit({ type: "conversations", accountId: account.accountId, peerId: params.peerId });
     }
@@ -345,25 +484,38 @@ export class ChatService {
     peerId: string;
     fileName: string;
     mimeType: string;
-    bytesBase64: string;
+    bytesBase64?: string;
+    bytes?: Buffer;
     caption: string;
     sendAsVoice?: boolean;
   }): Promise<MessageRecord> {
     const account = this.mustAccount(params.accountId);
+    this.logRuntime("send_media_started", {
+      accountId: account.accountId,
+      peerId: params.peerId,
+      fileName: params.fileName,
+      mimeType: params.mimeType,
+      sendAsVoice: Boolean(params.sendAsVoice),
+    });
     if (FORCE_ECHO_LATEST_INBOUND_VOICE) {
       const echoed = await this.sendLatestInboundVoice(account, params.peerId);
       if (echoed) return echoed;
     }
     const client = new WeixinClient({ baseUrl: account.baseUrl, token: account.token });
     const conversation = this.store.getConversation(account.accountId, params.peerId);
-    const sourceBytes = Buffer.from(params.bytesBase64, "base64");
+    const sourceBytes = params.bytes ?? Buffer.from(params.bytesBase64 ?? "", "base64");
+    if (!sourceBytes.length) {
+      throw new Error("上传文件内容为空");
+    }
     const detectedKind = detectUploadKind(params.fileName, params.mimeType);
-    const shouldSendAsVoice = !FORCE_AUDIO_AS_FILE && (
-      params.sendAsVoice === true || detectedKind === "voice"
-    );
+    const shouldSendAsVoice = params.sendAsVoice === true && detectedKind === "voice";
     const matchedVoiceTemplate = shouldSendAsVoice
       ? this.findMatchingVoiceTemplate(account.accountId, params.peerId, sourceBytes)
       : null;
+    const recentVoiceTemplate = shouldSendAsVoice && !matchedVoiceTemplate
+      ? this.findRecentInboundVoiceTemplate(account.accountId, params.peerId)
+      : null;
+    const activeVoiceTemplate = matchedVoiceTemplate ?? recentVoiceTemplate;
     const normalizedVoice = shouldSendAsVoice
       ? await normalizeOutboundVoiceMedia({
         fileName: params.fileName,
@@ -381,11 +533,11 @@ export class ChatService {
       fileName,
       mimeType,
       bytes,
-      kindOverride: FORCE_AUDIO_AS_FILE && detectedKind === "voice"
-        ? "file"
-        : shouldSendAsVoice
+      kindOverride: detectedKind === "voice"
+        ? shouldSendAsVoice
           ? "voice"
-          : undefined,
+          : "file"
+        : undefined,
     });
 
     const messageId = crypto.randomUUID();
@@ -425,9 +577,11 @@ export class ChatService {
     });
     this.emit({ type: "messages", accountId: account.accountId, peerId: params.peerId });
 
+    let typingTicket = "";
     try {
+      typingTicket = await this.prepareConversationForSend(client, params.peerId, conversation?.contextToken ?? "");
       if (params.caption.trim() && !shouldSendAsVoice) {
-        await client.sendMessage({
+        await this.sendMessageWithContextFallback(client, {
           to_user_id: params.peerId,
           client_id: `${messageId}-caption`,
           message_type: 2,
@@ -436,24 +590,59 @@ export class ChatService {
           context_token: conversation?.contextToken || undefined,
         });
       }
-      await client.sendMessage({
+      await this.sendMessageWithContextFallback(client, {
         to_user_id: params.peerId,
         client_id: messageId,
         message_type: 2,
         message_state: 2,
-        item_list: [uploadedMediaToItem(uploaded, {
-          voiceText: shouldSendAsVoice
-            ? (params.caption.trim() || matchedVoiceTemplate?.text || "")
-            : "",
-          voiceMetadata: matchedVoiceTemplate?.metadata ?? normalizedVoice?.metadata,
-        })],
+        item_list: [shouldSendAsVoice
+          ? this.buildVoiceMessageItem(uploaded, {
+            template: activeVoiceTemplate,
+            voiceText: params.caption.trim(),
+            voiceMetadata: normalizedVoice?.metadata ?? activeVoiceTemplate?.metadata,
+          })
+          : uploadedMediaToItem(uploaded, {
+            voiceText: "",
+            voiceMetadata: undefined,
+          })],
         context_token: conversation?.contextToken || undefined,
       });
       this.store.updateMessageStatus(messageId, "sent", messageId);
+      this.logRuntime("send_media_succeeded", {
+        accountId: account.accountId,
+        peerId: params.peerId,
+        messageId,
+        fileName,
+        kind: uploaded.kind,
+        voicePlaytimeMs: normalizedVoice?.metadata?.playtime ?? activeVoiceTemplate?.metadata?.playtime ?? 0,
+        voiceTemplateSource: matchedVoiceTemplate
+          ? "matched"
+          : recentVoiceTemplate
+            ? "recent-inbound"
+            : shouldSendAsVoice
+              ? "generated"
+              : "",
+      });
     } catch (error) {
       this.store.updateMessageStatus(messageId, "failed");
+      this.logRuntime("send_media_failed", {
+        accountId: account.accountId,
+        peerId: params.peerId,
+        messageId,
+        fileName,
+        voicePlaytimeMs: normalizedVoice?.metadata?.playtime ?? activeVoiceTemplate?.metadata?.playtime ?? 0,
+        voiceTemplateSource: matchedVoiceTemplate
+          ? "matched"
+          : recentVoiceTemplate
+            ? "recent-inbound"
+            : shouldSendAsVoice
+              ? "generated"
+              : "",
+        error,
+      });
       throw error;
     } finally {
+      await this.finishConversationSend(client, params.peerId, typingTicket);
       this.emit({ type: "messages", accountId: account.accountId, peerId: params.peerId });
       this.emit({ type: "conversations", accountId: account.accountId, peerId: params.peerId });
     }
@@ -510,6 +699,20 @@ export class ChatService {
     return null;
   }
 
+  private findRecentInboundVoiceTemplate(accountId: string, peerId: string): VoiceMessageTemplate | null {
+    const messages = [...this.store.listMessages(accountId, peerId)].reverse();
+    for (const message of messages) {
+      if (message.direction !== "inbound" || message.messageType !== "voice") {
+        continue;
+      }
+      const template = this.extractVoiceTemplate(message.rawJson);
+      if (template) {
+        return template;
+      }
+    }
+    return null;
+  }
+
   private candidateVoicePaths(mediaPath: string): string[] {
     if (!mediaPath) return [];
     const candidates = new Set<string>([mediaPath]);
@@ -526,7 +729,16 @@ export class ChatService {
     try {
       const parsed = JSON.parse(rawJson) as {
         item_list?: Array<{
+          type?: number;
+          create_time_ms?: number;
+          update_time_ms?: number;
+          is_completed?: boolean;
           voice_item?: {
+            media?: {
+              encrypt_query_param?: string;
+              aes_key?: string;
+              encrypt_type?: number;
+            };
             text?: string;
             encode_type?: number;
             bits_per_sample?: number;
@@ -536,8 +748,23 @@ export class ChatService {
         }>;
       };
       const voice = parsed.item_list?.[0]?.voice_item;
-      if (!voice) return null;
+      const item = parsed.item_list?.[0];
+      if (!voice || !item) return null;
       return {
+        item: {
+          type: item.type ?? MessageItemType.VOICE,
+          create_time_ms: item.create_time_ms,
+          update_time_ms: item.update_time_ms,
+          is_completed: item.is_completed,
+          voice_item: {
+            media: voice.media,
+            text: voice.text ?? "",
+            encode_type: voice.encode_type,
+            bits_per_sample: voice.bits_per_sample,
+            sample_rate: voice.sample_rate,
+            playtime: voice.playtime,
+          },
+        },
         metadata: {
           encodeType: voice.encode_type,
           bitsPerSample: voice.bits_per_sample,
@@ -549,6 +776,38 @@ export class ChatService {
     } catch {
       return null;
     }
+  }
+
+  private buildVoiceMessageItem(
+    uploaded: UploadedMedia,
+    options: { template?: VoiceMessageTemplate | null; voiceText: string; voiceMetadata?: VoiceItemMetadata },
+  ): MessageItem {
+    const generated = uploadedMediaToItem(uploaded, {
+      voiceText: options.voiceText,
+      voiceMetadata: options.voiceMetadata,
+    });
+    const generatedVoice = generated.voice_item;
+    if (!generatedVoice) {
+      return generated;
+    }
+    const templateItem = options.template?.item;
+    const templateVoice = templateItem?.voice_item;
+    const now = nowMs();
+    return {
+      type: templateItem?.type ?? MessageItemType.VOICE,
+      create_time_ms: now,
+      update_time_ms: now,
+      is_completed: templateItem?.is_completed ?? true,
+      voice_item: {
+        ...templateVoice,
+        media: generatedVoice.media,
+        text: options.voiceText,
+        encode_type: options.voiceMetadata?.encodeType ?? templateVoice?.encode_type ?? generatedVoice.encode_type,
+        bits_per_sample: options.voiceMetadata?.bitsPerSample ?? templateVoice?.bits_per_sample ?? generatedVoice.bits_per_sample,
+        sample_rate: options.voiceMetadata?.sampleRate ?? templateVoice?.sample_rate ?? generatedVoice.sample_rate,
+        playtime: options.voiceMetadata?.playtime ?? templateVoice?.playtime ?? generatedVoice.playtime,
+      },
+    };
   }
 
   private mustAccount(accountId: string): AccountRecord {
@@ -563,11 +822,30 @@ export class ChatService {
     if (this.monitorAbort.has(accountId)) return;
     const account = this.store.getAccount(accountId);
     if (!account) return;
+    this.logRuntime("monitor_started", { accountId });
     const controller = new AbortController();
     this.monitorAbort.set(accountId, controller);
     void this.monitorLoop(account, controller.signal).finally(() => {
       this.monitorAbort.delete(accountId);
     });
+  }
+
+  private stopMonitor(accountId: string): void {
+    const controller = this.monitorAbort.get(accountId);
+    if (!controller) return;
+    controller.abort();
+    this.monitorAbort.delete(accountId);
+    this.logRuntime("monitor_stopped", { accountId });
+  }
+
+  private removeAccountDataDirs(accountId: string): void {
+    const targets = [
+      path.join(this.workspaceDir, "data", "inbox", accountId),
+      path.join(this.workspaceDir, "data", "outbox", accountId),
+    ];
+    for (const target of targets) {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
   }
 
   private async monitorLoop(account: AccountRecord, signal: AbortSignal): Promise<void> {
@@ -580,6 +858,11 @@ export class ChatService {
       }
       try {
         const response = await client.getUpdates(sync.getUpdatesBuf);
+        this.logRuntime("getupdates_result", {
+          accountId: account.accountId,
+          ret: response.ret ?? 0,
+          messageCount: response.msgs?.length ?? 0,
+        });
         if ((response.errcode ?? 0) === SESSION_EXPIRED_ERRCODE) {
           this.store.saveSyncState({
             accountId: account.accountId,
@@ -619,6 +902,10 @@ export class ChatService {
           await this.processInboundMessage(account, message);
         }
       } catch (error) {
+        this.logRuntime("getupdates_error", {
+          accountId: account.accountId,
+          error,
+        });
         this.store.saveSyncState({
           accountId: account.accountId,
           getUpdatesBuf: sync.getUpdatesBuf,
@@ -700,6 +987,14 @@ export class ChatService {
       createdAt,
       updatedAt: nowMs(),
     };
+    this.logRuntime("inbound_message_received", {
+      accountId: account.accountId,
+      peerId,
+      messageType,
+      remoteMessageId: record.remoteMessageId,
+      hasMedia: Boolean(mediaPath),
+      textPreview: text.slice(0, 120),
+    });
     this.store.saveMessage(record);
     this.touchConversation(account.accountId, peerId, {
       preview: toPreview(messageType, text, fileName),
@@ -713,11 +1008,20 @@ export class ChatService {
     if (FORCE_ECHO_LATEST_INBOUND_VOICE && await this.sendLatestInboundVoice(account, peerId)) {
       return;
     }
-    if (!mediaItem && text.trim()) {
-      this.agentRouter.handleInboundText({
+    const inboundAttachments = mediaPath
+      ? [{
+        url: mediaPath,
+        mimeType: mimeType || "application/octet-stream",
+        fileName: fileName || path.basename(mediaPath),
+        sendAsVoice: messageType === "voice",
+      }]
+      : [];
+    if (text.trim() || inboundAttachments.length) {
+      this.agentRouter.handleInboundMessage({
         accountId: account.accountId,
         peerId,
         text,
+        media: inboundAttachments,
       });
     }
   }
@@ -767,7 +1071,7 @@ export class ChatService {
 
     const client = new WeixinClient({ baseUrl: account.baseUrl, token: account.token });
     try {
-      await client.sendMessage({
+      await this.sendMessageWithContextFallback(client, {
         to_user_id: peerId,
         client_id: messageId,
         message_type: 2,
@@ -827,6 +1131,79 @@ export class ChatService {
     }
   }
 
+  private async sendMessageWithContextFallback(client: WeixinClient, message: WeixinMessage): Promise<void> {
+    try {
+      await client.sendMessage(message);
+      return;
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      if (!/ret=-2|context/i.test(errorText)) {
+        throw error;
+      }
+      const retryMessage = { ...message };
+      retryMessage.client_id = `${message.client_id ?? crypto.randomUUID()}-retry-${crypto.randomUUID().slice(0, 8)}`;
+      const peerId = message.to_user_id ?? "";
+      const retryTypingTicket = await this.prepareConversationForSend(client, peerId, "");
+      if (message.context_token) {
+        delete retryMessage.context_token;
+      }
+      this.logRuntime("send_message_retry_without_context", {
+        peerId,
+        clientId: message.client_id ?? "",
+        retryClientId: retryMessage.client_id,
+        retryMode: message.context_token ? "drop-context" : "preflight-retry",
+        reason: errorText,
+      });
+      try {
+        await client.sendMessage(retryMessage);
+      } finally {
+        await this.finishConversationSend(client, peerId, retryTypingTicket);
+      }
+    }
+  }
+
+  private async prepareConversationForSend(
+    client: WeixinClient,
+    peerId: string,
+    contextToken = "",
+  ): Promise<string> {
+    const attempts = contextToken ? [contextToken, ""] : [""];
+    let lastError: unknown = null;
+    for (const candidate of attempts) {
+      try {
+        const config = await client.getConfig(peerId, candidate);
+        const typingTicket = config.typing_ticket ?? "";
+        this.logRuntime("send_prepare_ready", {
+          peerId,
+          tokenStrategy: candidate ? "context" : "empty",
+          hasTypingTicket: Boolean(typingTicket),
+        });
+        if (typingTicket) {
+          await client.sendTyping(peerId, typingTicket, 1).catch(() => undefined);
+        }
+        return typingTicket;
+      } catch (error) {
+        lastError = error;
+        this.logRuntime("send_prepare_failed", {
+          peerId,
+          tokenStrategy: candidate ? "context" : "empty",
+          error,
+        });
+      }
+    }
+    if (lastError) {
+      return "";
+    }
+    return "";
+  }
+
+  private async finishConversationSend(client: WeixinClient, peerId: string, typingTicket: string): Promise<void> {
+    if (!typingTicket || !peerId) {
+      return;
+    }
+    await client.sendTyping(peerId, typingTicket, 2).catch(() => undefined);
+  }
+
   private touchConversation(
     accountId: string,
     peerId: string,
@@ -851,5 +1228,59 @@ export class ChatService {
       updatedAt: nowMs(),
     };
     this.store.upsertConversation(next);
+  }
+
+  private collectDebugLogs(accountId: string, query?: DebugLogQuery): DebugLogEntry[] {
+    const source = query?.source ?? "all";
+    const level = query?.level ?? "all";
+    const keyword = query?.keyword?.trim().toLowerCase() ?? "";
+    const limit = query?.limit ?? "all";
+    const targets = source === "all"
+      ? DEBUG_LOG_SOURCES
+      : DEBUG_LOG_SOURCES.filter((entry) => entry.source === source);
+
+    const entries = targets
+      .flatMap(({ source, fileName }) => readRecentJsonlLogs(fileName, limit).map((entry) => {
+        const { timestamp, event, ...payload } = entry;
+        return {
+          source,
+          timestamp,
+          event,
+          level: /error|failed/i.test(event) ? "error" as const : "info" as const,
+          summary: summarizeLogEvent(source, event, payload),
+          payload,
+        };
+      }))
+      .filter((entry) => {
+        const payloadAccountId = typeof entry.payload.accountId === "string" ? entry.payload.accountId : "";
+        if (accountId && payloadAccountId && payloadAccountId !== accountId) {
+          return false;
+        }
+        if (level !== "all" && entry.level !== level) {
+          return false;
+        }
+        if (keyword) {
+          const haystack = [
+            entry.source,
+            entry.event,
+            entry.summary,
+            JSON.stringify(entry.payload),
+          ].join(" ").toLowerCase();
+          if (!haystack.includes(keyword)) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+
+    if (limit === "all") {
+      return entries;
+    }
+    return entries.slice(0, Math.max(1, limit));
+  }
+
+  private logRuntime(event: string, payload: Record<string, unknown>): void {
+    appendJsonlLog("chat-service.jsonl", event, payload);
   }
 }

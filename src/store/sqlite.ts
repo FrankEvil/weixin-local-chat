@@ -235,11 +235,51 @@ SELECT
   base_url AS baseUrl,
   cdn_base_url AS cdnBaseUrl,
   is_selected AS isSelected,
+  COALESCE((
+    SELECT SUM(c.unread_count)
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+  ), 0) AS unreadCount,
+  COALESCE((
+    SELECT c.peer_id
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), '') AS latestPeerId,
+  COALESCE((
+    SELECT c.title
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), '') AS latestConversationTitle,
+  COALESCE((
+    SELECT c.last_message_preview
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), '') AS latestMessagePreview,
+  COALESCE((
+    SELECT c.last_message_type
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), '') AS latestMessageType,
+  COALESCE((
+    SELECT c.last_message_at
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), 0) AS latestMessageAt,
   last_login_at AS lastLoginAt,
   created_at AS createdAt,
   updated_at AS updatedAt
 FROM accounts
-ORDER BY is_selected DESC, updated_at DESC;
+ORDER BY last_login_at DESC, created_at DESC;
 `).map((item) => ({ ...item, isSelected: Boolean(item.isSelected) }));
   }
 
@@ -253,6 +293,46 @@ SELECT
   base_url AS baseUrl,
   cdn_base_url AS cdnBaseUrl,
   is_selected AS isSelected,
+  COALESCE((
+    SELECT SUM(c.unread_count)
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+  ), 0) AS unreadCount,
+  COALESCE((
+    SELECT c.peer_id
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), '') AS latestPeerId,
+  COALESCE((
+    SELECT c.title
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), '') AS latestConversationTitle,
+  COALESCE((
+    SELECT c.last_message_preview
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), '') AS latestMessagePreview,
+  COALESCE((
+    SELECT c.last_message_type
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), '') AS latestMessageType,
+  COALESCE((
+    SELECT c.last_message_at
+    FROM conversations c
+    WHERE c.account_id = accounts.account_id
+    ORDER BY c.last_message_at DESC, c.updated_at DESC
+    LIMIT 1
+  ), 0) AS latestMessageAt,
   last_login_at AS lastLoginAt,
   created_at AS createdAt,
   updated_at AS updatedAt
@@ -263,7 +343,13 @@ LIMIT 1;`);
     return { ...rows[0], isSelected: Boolean(rows[0].isSelected) };
   }
 
-  upsertAccount(account: Omit<AccountRecord, "createdAt" | "updatedAt" | "isSelected"> & { isSelected?: boolean }): AccountRecord {
+  upsertAccount(
+    account: Omit<
+      AccountRecord,
+      "createdAt" | "updatedAt" | "isSelected" | "unreadCount" |
+      "latestPeerId" | "latestConversationTitle" | "latestMessagePreview" | "latestMessageType" | "latestMessageAt"
+    > & { isSelected?: boolean },
+  ): AccountRecord {
     const existing = this.getAccount(account.accountId);
     const createdAt = existing?.createdAt ?? nowMs();
     const updatedAt = nowMs();
@@ -306,6 +392,64 @@ ON CONFLICT(account_id) DO UPDATE SET
 UPDATE accounts SET is_selected = 0;
 UPDATE accounts SET is_selected = 1, updated_at = ${sqlNumber(nowMs())}
 WHERE account_id = ${sqlString(accountId)};`);
+  }
+
+  updateAccountDisplayName(accountId: string, displayName: string): AccountRecord | null {
+    this.exec(`
+UPDATE accounts
+SET display_name = ${sqlString(displayName)},
+    updated_at = ${sqlNumber(nowMs())}
+WHERE account_id = ${sqlString(accountId)};`);
+    return this.getAccount(accountId);
+  }
+
+  clearAccountHistory(accountId: string): void {
+    this.exec(`
+DELETE FROM agent_jobs
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM agent_sessions
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM agent_bindings
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM messages
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM conversations
+WHERE account_id = ${sqlString(accountId)};
+UPDATE accounts
+SET updated_at = ${sqlNumber(nowMs())}
+WHERE account_id = ${sqlString(accountId)};`);
+  }
+
+  deleteAccount(accountId: string): void {
+    const existing = this.getAccount(accountId);
+    if (!existing) {
+      return;
+    }
+    this.exec(`
+DELETE FROM agent_jobs
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM agent_sessions
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM agent_bindings
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM messages
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM conversations
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM sync_state
+WHERE account_id = ${sqlString(accountId)};
+DELETE FROM accounts
+WHERE account_id = ${sqlString(accountId)};`);
+    if (existing.isSelected) {
+      const fallback = this.query<{ accountId: string }>(`
+SELECT account_id AS accountId
+FROM accounts
+ORDER BY last_login_at DESC, created_at DESC
+LIMIT 1;`)[0]?.accountId;
+      if (fallback) {
+        this.selectAccount(fallback);
+      }
+    }
   }
 
   getSelectedAccount(): AccountRecord | null {
@@ -511,7 +655,10 @@ LIMIT 1;`);
     return rows[0] ?? null;
   }
 
-  listMessages(accountId: string, peerId: string, limit = 200): MessageRecord[] {
+  listMessages(accountId: string, peerId: string, beforeCreatedAt = 0, limit = 60): MessageRecord[] {
+    const beforeClause = beforeCreatedAt > 0
+      ? `AND created_at < ${sqlNumber(beforeCreatedAt)}`
+      : "";
     return this.query<MessageRecord>(`
 SELECT
   id,
@@ -529,11 +676,41 @@ SELECT
   raw_json AS rawJson,
   created_at AS createdAt,
   updated_at AS updatedAt
+FROM (
+  SELECT
+    id,
+    account_id,
+    peer_id,
+    direction,
+    message_type,
+    text,
+    file_name,
+    mime_type,
+    media_path,
+    media_size,
+    status,
+    remote_message_id,
+    raw_json,
+    created_at,
+    updated_at
+  FROM messages
+  WHERE account_id = ${sqlString(accountId)}
+    AND peer_id = ${sqlString(peerId)}
+    ${beforeClause}
+  ORDER BY created_at DESC
+  LIMIT ${sqlNumber(limit)}
+)
+ORDER BY created_at ASC;`);
+  }
+
+  countMessages(accountId: string, peerId: string): number {
+    const rows = this.query<{ total: number }>(`
+SELECT COUNT(*) AS total
 FROM messages
 WHERE account_id = ${sqlString(accountId)}
   AND peer_id = ${sqlString(peerId)}
-ORDER BY created_at ASC
-LIMIT ${sqlNumber(limit)};`);
+LIMIT 1;`);
+    return Number(rows[0]?.total ?? 0);
   }
 
   searchMessages(accountId: string, queryText: string, peerId = "", limit = 100): MessageRecord[] {

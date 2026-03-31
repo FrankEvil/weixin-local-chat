@@ -35,6 +35,13 @@ interface HandleInboundTextParams {
   text: string;
 }
 
+interface HandleInboundMessageParams {
+  accountId: string;
+  peerId: string;
+  text: string;
+  media?: AgentMediaAttachment[];
+}
+
 interface AgentExecutionResult {
   provider: AgentProvider;
   sessionId: string;
@@ -163,6 +170,35 @@ function wrapProviderPrompt(provider: AgentProvider, workspace: string, userProm
     "",
     resultInstruction,
   ].join("\n");
+}
+
+function summarizeInboundAttachment(attachment: AgentMediaAttachment, index: number): string {
+  const fileName = attachment.fileName || `附件 ${index + 1}`;
+  const mimeType = attachment.mimeType || "application/octet-stream";
+  return `${index + 1}. ${fileName} (${mimeType})\n路径：${attachment.url}`;
+}
+
+function buildInboundAgentPrompt(params: { text: string; media: AgentMediaAttachment[] }): string {
+  const normalizedText = params.text.trim();
+  const sections: string[] = [];
+
+  if (normalizedText) {
+    sections.push(`用户消息：\n${normalizedText}`);
+  }
+
+  if (params.media.length) {
+    sections.push([
+      "随附媒体：",
+      ...params.media.map((attachment, index) => summarizeInboundAttachment(attachment, index)),
+      "请结合这些本地文件一起理解和处理本轮消息。",
+    ].join("\n"));
+  }
+
+  if (!sections.length) {
+    return "";
+  }
+
+  return sections.join("\n\n");
 }
 
 function resolveWorkspace(provider: AgentProvider, config: AppConfig, fallbackWorkspace: string): string {
@@ -1003,9 +1039,16 @@ export class AgentRouter {
   }
 
   handleInboundText(params: HandleInboundTextParams): void {
+    this.handleInboundMessage({
+      ...params,
+      media: [],
+    });
+  }
+
+  handleInboundMessage(params: HandleInboundMessageParams): void {
     const trimmed = params.text.trim();
-    if (!trimmed) return;
-    const command = parseAgentCommand(trimmed);
+    const attachments = params.media ?? [];
+    const command = trimmed ? parseAgentCommand(trimmed) : null;
     if (command?.exit) {
       this.enqueue(`${params.accountId}::${params.peerId}::exit`, async () => {
         this.store.clearAgentBinding(params.accountId, params.peerId);
@@ -1053,7 +1096,10 @@ export class AgentRouter {
           accountId: params.accountId,
           peerId: params.peerId,
           provider: command.provider!,
-          prompt: command.prompt,
+          prompt: buildInboundAgentPrompt({
+            text: command.prompt,
+            media: attachments,
+          }),
         });
       });
       return;
@@ -1063,13 +1109,20 @@ export class AgentRouter {
     if (!binding?.activeProvider) {
       return;
     }
+    const prompt = buildInboundAgentPrompt({
+      text: trimmed,
+      media: attachments,
+    });
+    if (!prompt) {
+      return;
+    }
     const activeProvider = binding.activeProvider;
     this.enqueue(buildBindingKey(params.accountId, params.peerId, activeProvider), async () => {
       await this.runAgentTurn({
         accountId: params.accountId,
         peerId: params.peerId,
         provider: activeProvider,
-        prompt: trimmed,
+        prompt,
       });
     });
   }
@@ -1668,6 +1721,8 @@ export class AgentRouter {
       ...payload,
     });
     fs.appendFileSync(this.logFilePath, `${entry}\n`, "utf-8");
-    console.log(`[agent-router] ${entry}`);
+    if (/(error|failed)/i.test(event)) {
+      console.error(`[agent-router] ${entry}`);
+    }
   }
 }
