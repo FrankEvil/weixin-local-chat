@@ -227,9 +227,9 @@ weixin-local-chat/
 
 | 文件 | 说明 |
 |------|------|
-| `weixin-communication-openapi.md` | 本地服务对外暴露的 HTTP/SSE 接口文档，包含完整的 API 路由、请求参数和响应格式 |
-| `weixin-upstream-openapi.md` | 项目依赖的微信上游通讯接口文档，描述 `ilink/bot/*` 等接口的调用方式 |
-| `weixin-upstream-openapi-3.1.yaml` | 微信上游接口的 OpenAPI 3.1 规范文件，可用于生成客户端代码或接口测试 |
+| [weixin-communication-openapi.md](./docs/weixin-communication-openapi.md) | 本地服务对外暴露的 HTTP/SSE 接口文档，包含完整的 API 路由、请求参数和响应格式 |
+| [weixin-upstream-openapi.md](./docs/weixin-upstream-openapi.md) | 项目依赖的微信上游通讯接口文档，描述 `ilink/bot/*` 等接口的调用方式 |
+| [weixin-upstream-openapi-3.1.yaml](./docs/weixin-upstream-openapi-3.1.yaml) | 微信上游接口的 OpenAPI 3.1 规范文件，可用于生成客户端代码或接口测试 |
 
 ### API 接口分类
 
