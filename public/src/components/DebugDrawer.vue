@@ -34,7 +34,7 @@
 
             <n-tab-pane name="logs" tab="运行日志">
               <div class="logs-header">
-                <n-tag size="small" round type="info">{{ filteredLogs.length }} / {{ allLogs.length }} 条</n-tag>
+                <n-tag size="small" round type="info">{{ filteredAllLogs.length }} / {{ allLogs.length }} 条</n-tag>
                 <span class="logs-header__hint">{{ logsHint }}</span>
               </div>
 
@@ -59,44 +59,54 @@
 
               <n-empty v-if="!allLogs.length" description="最近还没有日志" />
 
-              <n-empty v-else-if="!filteredLogs.length" description="当前筛选条件下没有匹配日志" />
+              <n-empty v-else-if="!filteredAllLogs.length" description="当前筛选条件下没有匹配日志" />
 
-              <div v-else class="log-list">
-                <article
-                  v-for="(entry, index) in filteredLogs"
-                  :key="`${entry.timestamp}-${entry.source}-${index}`"
-                  class="log-card"
-                  :class="{ 'log-card--error': entry.level === 'error' }"
-                >
-                  <div class="log-card__top">
-                    <div class="log-card__main">
-                      <div class="log-card__headline">{{ entry.summary }}</div>
-                      <div class="log-card__subline">
-                        <span>{{ formatTime(entry.timestamp) }}</span>
-                        <span>{{ entry.event }}</span>
+              <div v-else>
+                <div class="log-list">
+                  <article
+                    v-for="(entry, index) in filteredLogs"
+                    :key="`${entry.timestamp}-${entry.source}-${index}`"
+                    class="log-card"
+                    :class="{ 'log-card--error': entry.level === 'error' }"
+                  >
+                    <div class="log-card__top">
+                      <div class="log-card__main">
+                        <div class="log-card__headline">{{ entry.summary }}</div>
+                        <div class="log-card__subline">
+                          <span>{{ formatTime(entry.timestamp) }}</span>
+                          <span>{{ entry.event }}</span>
+                        </div>
                       </div>
+                      <n-space :size="8" align="center" wrap>
+                        <n-tag size="small" :type="entry.level === 'error' ? 'error' : 'success'">
+                          {{ entry.level === 'error' ? '异常' : '正常' }}
+                        </n-tag>
+                        <n-tag size="small" round>{{ entry.source }}</n-tag>
+                      </n-space>
                     </div>
-                    <n-space :size="8" align="center" wrap>
-                      <n-tag size="small" :type="entry.level === 'error' ? 'error' : 'success'">
-                        {{ entry.level === 'error' ? '异常' : '正常' }}
-                      </n-tag>
-                      <n-tag size="small" round>{{ entry.source }}</n-tag>
-                    </n-space>
-                  </div>
 
-                  <p class="log-card__preview">{{ summarizePayload(entry.payload) }}</p>
+                    <p class="log-card__preview">{{ summarizePayload(entry.payload) }}</p>
 
-                  <div class="log-card__actions">
-                    <n-button tertiary size="tiny" @click="toggleExpanded(`${entry.timestamp}-${entry.source}-${index}`)">
-                      {{ expandedKeys.has(`${entry.timestamp}-${entry.source}-${index}`) ? '收起详情' : '查看详情' }}
-                    </n-button>
-                  </div>
+                    <div class="log-card__actions">
+                      <n-button tertiary size="tiny" @click="toggleExpanded(`${entry.timestamp}-${entry.source}-${index}`)">
+                        {{ expandedKeys.has(`${entry.timestamp}-${entry.source}-${index}`) ? '收起详情' : '查看详情' }}
+                      </n-button>
+                    </div>
 
-                  <pre
-                    v-if="expandedKeys.has(`${entry.timestamp}-${entry.source}-${index}`)"
-                    class="debug-content debug-content--compact"
-                  >{{ stringify(entry.payload) }}</pre>
-                </article>
+                    <pre
+                      v-if="expandedKeys.has(`${entry.timestamp}-${entry.source}-${index}`)"
+                      class="debug-content debug-content--compact"
+                    >{{ stringify(entry.payload) }}</pre>
+                  </article>
+                </div>
+
+                <div class="log-pagination">
+                  <n-button size="small" tertiary :disabled="currentPage <= 1" @click="currentPage = 1">首页</n-button>
+                  <n-button size="small" tertiary :disabled="currentPage <= 1" @click="currentPage--">上一页</n-button>
+                  <span class="log-pagination__info">{{ currentPage }} / {{ totalPages }}</span>
+                  <n-button size="small" tertiary :disabled="currentPage >= totalPages" @click="currentPage++">下一页</n-button>
+                  <n-button size="small" tertiary :disabled="currentPage >= totalPages" @click="currentPage = totalPages">末页</n-button>
+                </div>
               </div>
             </n-tab-pane>
 
@@ -113,7 +123,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
   NAlert,
   NButton,
@@ -147,6 +157,8 @@ const logSource = ref<DebugLogSource>('all');
 const logLevel = ref<'all' | 'info' | 'error'>('all');
 const keyword = ref('');
 const expandedKeys = ref<Set<string>>(new Set());
+const currentPage = ref(1);
+const pageSize = ref(20);
 
 const formatted = computed(() => JSON.stringify(props.snapshot ?? {}, null, 2));
 
@@ -173,7 +185,7 @@ const levelOptions = [
 ] satisfies Array<{ label: string; value: 'all' | 'info' | 'error' }>;
 
 const allLogs = computed(() => props.snapshot?.recentLogs ?? []);
-const filteredLogs = computed(() => {
+const filteredAllLogs = computed(() => {
   const source = logSource.value;
   const level = logLevel.value;
   const query = keyword.value.trim().toLowerCase();
@@ -195,6 +207,19 @@ const filteredLogs = computed(() => {
     ].join(' ').toLowerCase();
     return haystack.includes(query);
   });
+});
+
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredAllLogs.value.length / pageSize.value)));
+
+const filteredLogs = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  const end = start + pageSize.value;
+  return filteredAllLogs.value.slice(start, end);
+});
+
+// 筛选条件变化时重置页码
+watch([logSource, logLevel, keyword], () => {
+  currentPage.value = 1;
 });
 
 const currentClearSource = computed<DebugLogSource>(() => logSource.value === 'all' ? 'all' : logSource.value);
@@ -356,6 +381,22 @@ function formatTime(value: string | number): string {
 .log-card__actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.log-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 12px 0;
+}
+
+.log-pagination__info {
+  min-width: 80px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 .json-panel {

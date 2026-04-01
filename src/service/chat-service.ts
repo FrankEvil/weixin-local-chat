@@ -1349,6 +1349,41 @@ export class ChatService {
   private buildNotificationText(params: { title?: string; content?: string; text?: string }): string {
     const title = params.title?.trim() ?? "";
     const content = params.content?.trim() ?? params.text?.trim() ?? "";
-    return [title ? `【${title}】` : "", content].filter(Boolean).join("\n");
+    const timestamp = new Date().toLocaleString("zh-CN", { hour12: false });
+    
+    const lines: string[] = [];
+    
+    if (title) {
+      const emoji = this.getTitleEmoji(title);
+      lines.push(`${emoji} 【${title}】`);
+    } else {
+      lines.push("📢 通知消息");
+    }
+    
+    if (content) {
+      lines.push(content);
+    }
+    
+    lines.push("━━━━━━━━━━━━");
+    lines.push(`🕐 ${timestamp}`);
+    
+    return lines.join("\n");
+  }
+  
+  private getTitleEmoji(title: string): string {
+    const titleLower = title.toLowerCase();
+    if (titleLower.includes("告警") || titleLower.includes("警告") || titleLower.includes("alert")) {
+      return "⚠️";
+    }
+    if (titleLower.includes("错误") || titleLower.includes("error") || titleLower.includes("失败")) {
+      return "❌";
+    }
+    if (titleLower.includes("成功") || titleLower.includes("success") || titleLower.includes("完成")) {
+      return "✅";
+    }
+    if (titleLower.includes("信息") || titleLower.includes("info") || titleLower.includes("通知")) {
+      return "ℹ️";
+    }
+    return "📢";
   }
 }

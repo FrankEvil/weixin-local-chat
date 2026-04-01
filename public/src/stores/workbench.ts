@@ -73,17 +73,11 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   const visibleMessages = computed(() => (searchQuery.value.trim() ? searchResults.value : messages.value));
 
   function mergeMessages(nextItems: MessageRecord[]): void {
-    const merged = [...messages.value];
+    const messageMap = new Map(messages.value.map((item) => [item.id, item]));
     for (const next of nextItems) {
-      const index = merged.findIndex((item) => item.id === next.id);
-      if (index >= 0) {
-        merged[index] = next;
-      } else {
-        merged.push(next);
-      }
+      messageMap.set(next.id, next);
     }
-    merged.sort((left, right) => left.createdAt - right.createdAt);
-    messages.value = merged;
+    messages.value = Array.from(messageMap.values()).sort((left, right) => left.createdAt - right.createdAt);
   }
 
   function removeMessage(messageId: string): void {
@@ -354,6 +348,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   async function searchMessages(query: string): Promise<void> {
     searchQuery.value = query.trim();
     if (!searchQuery.value) {
+      searchResults.value = [];
+      return;
+    }
+    if (!selectedAccountId.value || !selectedPeerId.value) {
       searchResults.value = [];
       return;
     }

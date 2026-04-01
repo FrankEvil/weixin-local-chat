@@ -3,7 +3,7 @@
     <div class="ambient ambient-left"></div>
     <div class="ambient ambient-right"></div>
 
-    <header class="topbar">
+    <header class="topbar" v-if="workbench.authenticated">
       <div class="brand-block">
         <span class="brand-kicker">Local Ops Console</span>
         <h1>微信本地工作台</h1>
@@ -82,8 +82,8 @@
                     <strong class="account-card__title">
                       <n-ellipsis :line-clamp="1">{{ account.displayName || account.accountId }}</n-ellipsis>
                     </strong>
-                    <n-text depth="3" class="account-card__meta account-card__summary">
-                      <n-ellipsis :line-clamp="2">{{ account.latestMessagePreview || '等待新的聊天消息…' }}</n-ellipsis>
+                    <n-text depth="3" class="account-card__preview">
+                      <n-ellipsis :line-clamp="1">{{ account.latestMessagePreview || '暂无消息' }}</n-ellipsis>
                     </n-text>
                   </div>
                   <n-space :size="8" align="center" :wrap="false">
@@ -534,6 +534,7 @@ const pendingHistoryScrollRestore = ref<{ scrollTop: number; scrollHeight: numbe
 let eventSource: EventSource | null = null;
 let reconnectTimer: number | null = null;
 let loginPollTimer: number | null = null;
+let loginPolling = false;
 let authRequiredListener: EventListener | null = null;
 
 const isDarkMode = computed(() => themeController?.mode.value === 'dark');
@@ -655,6 +656,12 @@ watch(showSearchBar, (visible) => {
   }
 });
 
+watch(showLogin, (visible) => {
+  if (!visible) {
+    stopLoginPolling();
+  }
+});
+
 watch(
   () => workbench.loginSession?.status,
   (status) => {
@@ -662,16 +669,17 @@ watch(
       stopLoginPolling();
       return;
     }
-    if (!status || status === 'confirmed' || status === 'expired' || status === 'error') {
+    if (status === 'confirmed' || status === 'expired' || status === 'error') {
       stopLoginPolling();
       if (status === 'confirmed') {
         messageApi.success('登录已确认，账号列表已刷新');
       }
       return;
     }
-    startLoginPolling();
+    if (status === 'scaned' || status === 'wait') {
+      startLoginPolling();
+    }
   },
-  { immediate: true },
 );
 
 async function handlePasswordLogin(): Promise<void> {
@@ -1029,18 +1037,51 @@ async function handleManualPollLogin(): Promise<void> {
   }
 }
 
-function startLoginPolling(): void {
-  if (loginPollTimer !== null) return;
-  loginPollTimer = window.setInterval(() => {
-    workbench.pollLogin().catch(() => undefined);
+async function pollLoginOnce(): Promise<void> {
+  if (!showLogin.value || !workbench.loginSession?.sessionKey) {
+    stopLoginPolling();
+    return;
+  }
+  loginPolling = true;
+  try {
+    await workbench.pollLogin();
+  } catch {
+    // 忽略轮询错误
+  } finally {
+    loginPolling = false;
+  }
+  scheduleNextPoll();
+}
+
+function scheduleNextPoll(): void {
+  if (!showLogin.value) {
+    stopLoginPolling();
+    return;
+  }
+  const status = workbench.loginSession?.status;
+  if (status === 'confirmed' || status === 'expired' || status === 'error') {
+    stopLoginPolling();
+    if (status === 'confirmed') {
+      messageApi.success('登录已确认，账号列表已刷新');
+    }
+    return;
+  }
+  loginPollTimer = window.setTimeout(() => {
+    void pollLoginOnce();
   }, 3000);
+}
+
+function startLoginPolling(): void {
+  stopLoginPolling();
+  void pollLoginOnce();
 }
 
 function stopLoginPolling(): void {
   if (loginPollTimer !== null) {
-    window.clearInterval(loginPollTimer);
+    window.clearTimeout(loginPollTimer);
     loginPollTimer = null;
   }
+  loginPolling = false;
 }
 
 function connectEventStream(): void {
@@ -1145,10 +1186,6 @@ function parseEventPayload(raw: string): { type: string; accountId?: string; pee
   } catch {
     return null;
   }
-}
-
-function renderConversationPreview(item: ConversationRecord): string {
-  return item.lastMessagePreview || `${item.lastMessageType || '消息'} · 暂无文本预览`;
 }
 
 function accountMessageTagLabel(account: AccountRecord): string {
@@ -1564,6 +1601,15 @@ async function scrollMessagesToBottom(): Promise<void> {
 .account-card__title {
   font-size: 16px;
   line-height: 1.35;
+}
+
+.account-card__preview {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-tertiary);
+  opacity: 0.85;
 }
 
 .conversation-item__time {

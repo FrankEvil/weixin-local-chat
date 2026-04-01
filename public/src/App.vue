@@ -1,7 +1,7 @@
 <template>
   <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides">
     <n-dialog-provider>
-      <n-notification-provider>
+      <n-notification-provider placement="top-right" :max="3">
         <n-message-provider>
           <router-view />
         </n-message-provider>

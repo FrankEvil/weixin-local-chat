@@ -39,6 +39,31 @@
                 <n-text depth="3">通知接口无需登录，但必须携带 Bearer Token。</n-text>
                 <n-button tertiary :loading="tokenRotating" @click="emit('regenerate-notify-token')">重新生成 Token</n-button>
               </n-space>
+              
+              <n-divider />
+              
+              <n-card size="small" :bordered="false">
+                <template #header>
+                  <n-space align="center" :size="8">
+                    <span>📖</span>
+                    <span>使用说明</span>
+                  </n-space>
+                </template>
+                <n-space vertical :size="12">
+                  <n-text depth="3">通过 HTTP POST 请求发送通知到微信：</n-text>
+                  <n-code language="bash" :code="notifyCurlExample" />
+                  <n-text depth="3">支持的参数：</n-text>
+                  <n-ul>
+                    <n-li><n-text code>title</n-text> - 可选，通知标题（如：告警、错误、成功）</n-li>
+                    <n-li><n-text code>content</n-text> - 可选，通知内容</n-li>
+                    <n-li><n-text code>text</n-text> - 可选，通知内容（与 content 二选一）</n-li>
+                    <n-li><n-text code>accountId</n-text> - 可选，指定发送账号（不填使用默认）</n-li>
+                  </n-ul>
+                  <n-alert type="info" :show-icon="false">
+                    标题会自动添加对应 emoji：告警⚠️、错误❌、成功✅、信息ℹ️
+                  </n-alert>
+                </n-space>
+              </n-card>
             </n-form>
           </n-tab-pane>
 
@@ -148,6 +173,8 @@ import {
   NAlert,
   NButton,
   NCard,
+  NCode,
+  NDivider,
   NDrawer,
   NDrawerContent,
   NForm,
@@ -155,12 +182,14 @@ import {
   NGrid,
   NGridItem,
   NInput,
+  NLi,
   NSelect,
   NSpace,
   NTabPane,
   NTabs,
   NTag,
   NText,
+  NUl,
   useMessage,
 } from 'naive-ui';
 
@@ -210,6 +239,14 @@ const notifyTargetOptions = computed(() => props.accounts
   })));
 
 const selectedNotifyTarget = computed(() => draft.defaultNotifyAccountId || null);
+
+const notifyCurlExample = computed(() => {
+  const token = draft.notifyToken || '<your-token>';
+  return `curl -X POST http://localhost:3000/api/notify \\
+  -H "Authorization: Bearer ${token}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"title": "告警", "content": "CPU 使用率过高"}'`;
+});
 
 watch(
   () => props.config,
