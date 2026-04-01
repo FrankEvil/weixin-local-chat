@@ -20,16 +20,138 @@
 - **数据导出**：支持导出会话记录
 
 ### 🤖 Agent 集成
-支持三种 AI Agent 模式，可通过指令触发：
-- **Codex**：代码生成与编辑
-- **Claude**：对话与分析
-- **OpenClaw**：支持 auto / local / docker 三种运行模式
+
+支持三种 AI Agent 模式，通过微信消息中的指令触发。Agent 可以理解上下文、执行代码、生成媒体内容，并将结果自动发送回微信。
+
+#### /codex - Codex Agent
+
+代码生成与编辑助手，基于 OpenAI Codex CLI。
+
+**使用方式**：
+- `/codex <prompt>` - 发送新任务给 Codex
+- `/codex` - 切换到 Codex 模式，后续普通消息自动转发
+- `/exit` - 退出 Agent 模式
+
+**特性**：
+- 自动恢复会话：支持多轮对话，自动追踪会话 ID
+- 工作目录：在指定目录下执行代码操作
+- 智能分段：长回复自动按段落拆分，避免微信消息长度限制
+- 会话持久化：会话记录保存在 `~/.codex/sessions/` 目录
+
+**示例**：
+```
+/codex 帮我写一个 Python 脚本，统计当前目录下所有文件的行数
+```
+
+#### /claude - Claude Agent
+
+对话与分析助手，基于 Anthropic Claude CLI。
+
+**使用方式**：
+- `/claude <prompt>` - 发送新任务给 Claude
+- `/claude` - 切换到 Claude 模式，后续普通消息自动转发
+- `/exit` - 退出 Agent 模式
+
+**特性**：
+- 会话恢复：支持 `--resume` 恢复历史会话
+- 计划模式：默认使用 `plan` 权限模式，安全执行
+- 超时控制：单次执行最长 180 秒
+- 智能解析：自动提取 Claude 输出中的有效文本
+
+**示例**：
+```
+/claude 分析这段代码的性能问题：function fibonacci(n) { return n <= 1 ? n : fibonacci(n-1) + fibonacci(n-2); }
+```
+
+#### /openclaw - OpenClaw Agent
+
+支持 auto / local / docker 三种运行模式的通用 Agent。
+
+**使用方式**：
+- `/openclaw <prompt>` - 发送任务给 OpenClaw
+- `/openclaw` - 切换到 OpenClaw 模式
+
+**运行模式**：
+- `auto` - 自动检测本地命令或 Docker 容器
+- `local` - 使用本地安装的 `openclaw` CLI
+- `docker` - 通过 Docker 容器执行
+
+**特性**：
+- 媒体生成：支持生成图片、语音、视频等媒体内容
+- 自动发送：生成的媒体文件自动发送到微信
+- 容器化支持：可在 Docker 中运行，无需本地安装
+
+### 📢 通知系统
+
+支持通过外部 API 发送通知消息到微信，适用于监控告警、任务完成提醒等场景。
+
+#### 配置步骤
+
+1. 首次启动时，控制台会显示 notify token：
+   ```
+   [weixin-local-chat] notify token: <your-token>
+   ```
+
+2. 在「设置」中配置：
+   - **默认通知账号**：选择接收通知的微信账号
+   - **默认通知会话**：选择接收通知的会话（可选，默认使用最新会话）
+
+#### API 调用
+
+**端点**：`POST /api/notify`
+
+**请求头**：
+```
+Authorization: Bearer <your-notify-token>
+Content-Type: application/json
+```
+
+**请求体**：
+```json
+{
+  "title": "告警标题",
+  "content": "通知内容详情",
+  "accountId": "可选，指定接收通知的账号 ID"
+}
+```
+
+**响应**：
+```json
+{
+  "ok": true,
+  "data": {
+    "id": "message-id",
+    "content": "格式化后的通知文本"
+  }
+}
+```
+
+#### 通知格式
+
+通知消息会自动格式化，包含：
+- 🎨 智能图标：根据标题关键词自动选择图标（⚠️告警、❌错误、✅成功、ℹ️信息）
+- 📝 标题与内容：结构化显示
+- 🕐 时间戳：自动添加发送时间
+
+**示例效果**：
+```
+⚠️ 【服务器告警】
+CPU 使用率超过 90%，请及时处理
+━━━━━━━━━━━━
+🕐 2025/01/01 12:30:00
+```
+
+#### 使用场景
+
+- **监控告警**：Prometheus、Grafana 等监控系统触发告警时发送通知
+- **CI/CD 通知**：构建完成、部署成功等事件通知
+- **定时任务**：Cron 任务执行完成后的结果通知
+- **Webhook 回调**：接收第三方服务的 Webhook 并转发到微信
 
 ### 🎨 用户体验
 - **深色/浅色主题**：支持主题切换，自动适配系统偏好
 - **响应式设计**：适配桌面与移动端
 - **调试面板**：实时查看同步状态、Agent 绑定、运行日志
-- **通知系统**：支持桌面通知（需配置 notify token）
 
 ## 🛠️ 技术栈
 
@@ -174,10 +296,59 @@ docker inspect --format='{{.State.Health.Status}}' weixin-local-chat
 4. 点击「发送」或按 Enter 发送
 
 ### Agent 指令
-在消息输入框直接输入以下指令：
-- `/codex <prompt>` - 调用 Codex Agent
-- `/claude <prompt>` - 调用 Claude Agent
-- `/openclaw <prompt>` - 调用 OpenClaw Agent
+
+在微信消息输入框中输入指令即可触发 Agent。
+
+#### 基本用法
+
+```
+/codex 帮我写一个 Python 脚本
+/claude 分析这段代码的性能问题
+/openclaw 生成一张风景图片
+```
+
+#### 模式切换
+
+```
+/codex        # 切换到 Codex 模式，后续消息自动转发给 Codex
+/claude       # 切换到 Claude 模式
+/openclaw     # 切换到 OpenClaw 模式
+/exit         # 退出 Agent 模式
+```
+
+#### 多轮对话
+
+Agent 会自动追踪会话上下文，支持多轮对话：
+```
+/codex 写一个排序算法
+# Codex 返回代码后，直接发送：
+时间复杂度是多少？
+# Agent 会基于上文继续回答
+```
+
+#### 媒体附件
+
+发送消息时附带图片、文件等，Agent 可以处理这些附件：
+```
+/openclaw 帮我分析这张图片的内容
+# 同时发送一张图片
+```
+
+### 通知 API
+
+通过外部 API 发送通知到微信：
+
+```bash
+curl -X POST http://127.0.0.1:3100/api/notify \
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "部署完成",
+    "content": "项目已成功部署到生产环境"
+  }'
+```
+
+详细配置请参阅 [通知系统](#-通知系统) 章节。
 
 ### 调试面板
 点击顶部「调试」按钮打开调试面板，可查看：
